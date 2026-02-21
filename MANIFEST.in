@@ -1,0 +1,6 @@
+include README.md
+include LICENSE
+recursive-include src *.py
+
+# Benchmarks are for the GitHub repository only — excluded from PyPI distributions
+prune benchmarks
