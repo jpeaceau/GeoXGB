@@ -18,8 +18,8 @@ class _GeoXGBBase:
 
     _PARAM_NAMES = (
         "n_rounds", "learning_rate", "max_depth", "min_samples_leaf",
-        "n_partitions", "reduce_ratio", "expand_ratio", "y_weight",
-        "method", "variance_weighted", "bandwidth", "refit_interval",
+        "n_partitions", "hvrt_min_samples_leaf", "reduce_ratio", "expand_ratio",
+        "y_weight", "method", "variance_weighted", "bandwidth", "refit_interval",
         "auto_noise", "auto_expand", "min_train_samples", "random_state",
         "cache_geometry",
     )
@@ -34,6 +34,7 @@ class _GeoXGBBase:
         max_depth=6,
         min_samples_leaf=5,
         n_partitions=None,
+        hvrt_min_samples_leaf=None,
         reduce_ratio=0.7,
         expand_ratio=0.0,
         y_weight=0.5,
@@ -52,6 +53,7 @@ class _GeoXGBBase:
         self.max_depth = max_depth
         self.min_samples_leaf = min_samples_leaf
         self.n_partitions = n_partitions
+        self.hvrt_min_samples_leaf = hvrt_min_samples_leaf
         self.reduce_ratio = reduce_ratio
         self.expand_ratio = expand_ratio
         self.y_weight = y_weight
@@ -99,6 +101,7 @@ class _GeoXGBBase:
             is_classifier=self._is_classifier,
             y_cls=self._y_cls_orig,
             hvrt_cache=hvrt_cache,
+            min_samples_leaf=self.hvrt_min_samples_leaf,
         )
 
     # ------------------------------------------------------------------

@@ -65,6 +65,7 @@ def hvrt_resample(
     is_classifier=False,
     y_cls=None,
     hvrt_cache=None,
+    min_samples_leaf=None,
 ):
     """
     Geometry-aware resample via HVRT.
@@ -106,6 +107,7 @@ def hvrt_resample(
     hvrt_cache : HVRT instance | None — if provided, skip fit() and reuse
                                         the cached model's geometry (tree_,
                                         partition_ids_, X_z_, KDEs).
+    min_samples_leaf : int | None — passed to HVRT. None = HVRT auto-tunes.
 
     Returns
     -------
@@ -121,6 +123,7 @@ def hvrt_resample(
             bandwidth=bandwidth,
             random_state=random_state,
             n_partitions=n_partitions,
+            min_samples_leaf=min_samples_leaf,
         )
         hvrt_model.fit(X, y=y, feature_types=feature_types)
 

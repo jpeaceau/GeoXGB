@@ -486,10 +486,23 @@ def evolution_report(
         for e in trace
     ]
 
+    partition_counts = [r["n_partitions"] for r in rounds]
     out: dict[str, Any] = {
         "n_resamples":    n_resamples,
         "refit_interval": model.refit_interval,
         "rounds":         rounds,
+        "partition_stability": {
+            "min_partitions": min(partition_counts) if partition_counts else 0,
+            "max_partitions": max(partition_counts) if partition_counts else 0,
+            "changed": len(set(partition_counts)) > 1,
+            "interpretation": (
+                "Partition count stable across all refits."
+                if len(set(partition_counts)) <= 1
+                else f"Partition count varied from {min(partition_counts)} to "
+                     f"{max(partition_counts)} across refits, indicating the "
+                     f"residual structure evolved during training."
+            ),
+        },
     }
 
     if detail in ("standard", "full") and n_resamples >= 1:
@@ -540,6 +553,36 @@ def evolution_report(
             interp = " ".join(parts_interp) if parts_interp else "Mixed evolution observed."
 
         out["interpretation"] = interp
+
+        # UPDATE-010: importance drift across refits
+        pfi = model.partition_feature_importances(names)
+        if len(pfi) >= 2 and feature_names is not None:
+            first_imp = pfi[0]["importances"]
+            last_imp = pfi[-1]["importances"]
+
+            if first_imp and last_imp:
+                drifts = []
+                for fn in names:
+                    v0 = first_imp.get(fn, 0.0)
+                    v1 = last_imp.get(fn, 0.0)
+                    if abs(v1 - v0) > 0.05:
+                        drifts.append({
+                            "feature": fn,
+                            "round_0": round(v0, 4),
+                            "final_round": round(v1, 4),
+                            "delta": round(v1 - v0, 4),
+                        })
+
+                out["importance_drift"] = {
+                    "n_drifted": len(drifts),
+                    "features": sorted(drifts, key=lambda x: -abs(x["delta"])),
+                    "interpretation": (
+                        "No meaningful partition importance drift detected."
+                        if not drifts
+                        else f"{len(drifts)} features showed meaningful drift in "
+                             f"partition importance across refits."
+                    ),
+                }
 
     if detail == "full":
         pfi = model.partition_feature_importances(names)
