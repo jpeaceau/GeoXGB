@@ -60,10 +60,14 @@ All notable changes to GeoXGB are documented here.
 
 - **`convergence_tol` parameter**: when set (e.g. `0.001`), training stops
   early if the mean-absolute-gradient improvement over the last two refit cycles
-  falls below `convergence_tol × initial_gradient`. A compute-efficiency
-  feature only — GeoXGB does not overfit with high `n_rounds`, so early
-  stopping does not improve generalisation; it only saves wall time when the
-  gradient has genuinely converged.
+  falls below `convergence_tol × initial_gradient`. A **compute-efficiency
+  feature only** — unlike standard gradient boosting, GeoXGB cannot overfit
+  by adding more rounds. Because HVRT re-partitions the residual landscape at
+  every `refit_interval` and FPS selects a fresh geometrically diverse subset,
+  no boosting tree ever trains on the same sample twice. There is no fixed
+  training set to memorise, so the train–val gap stays small regardless of
+  `n_rounds`. Early stopping does not improve generalisation; it only saves
+  wall time once the gradient has genuinely converged.
 
 - **`generation_strategy` parameter** (default `"epanechnikov"`): KDE sampling
   strategy forwarded to `hvrt.expand()`. `"epanechnikov"` uses per-partition
