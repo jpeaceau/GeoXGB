@@ -81,7 +81,7 @@ def test_multiclass_5_proba_shape():
 
 def test_string_labels():
     X, y_int = make_classification(
-        n_samples=200, n_features=4, n_informative=3,
+        n_samples=200, n_features=6, n_informative=4,
         n_classes=3, n_clusters_per_class=1, random_state=0,
     )
     label_map = {0: "cat", 1: "dog", 2: "bird"}
@@ -98,8 +98,8 @@ def test_string_labels():
 
 def test_binary_imbalanced():
     n = 300
-    X_pos = RNG.normal([2, 2], 1.0, (n // 10, 5))
-    X_neg = RNG.normal([0, 0], 1.0, (n - n // 10, 5))
+    X_pos = RNG.normal(2.0, 1.0, (n // 10, 5))
+    X_neg = RNG.normal(0.0, 1.0, (n - n // 10, 5))
     X = np.vstack([X_neg, X_pos])
     y = np.concatenate([np.zeros(n - n // 10), np.ones(n // 10)])
     clf = GeoXGBClassifier(n_rounds=30, random_state=0)

@@ -1,10 +1,148 @@
 import numpy as np
+from joblib import Parallel, delayed
 from sklearn.preprocessing import LabelEncoder
 from sklearn.tree import DecisionTreeRegressor
 
 from geoxgb._base import _GeoXGBBase
 from geoxgb._utils import _sigmoid
 
+
+# ---------------------------------------------------------------------------
+# Module-level worker for parallel multiclass training
+# Must be at module level for Windows process-based pickling.
+# ---------------------------------------------------------------------------
+
+def _fit_class_worker(k, X, y_enc, params):
+    """
+    Train one one-vs-rest binary ensemble for class k.
+
+    Returns (trees_k, init_pred, lr_vals_k, resample_history_k, n_resampled).
+    """
+    import warnings as _w
+    _w.filterwarnings("ignore")
+
+    from geoxgb._resampling import hvrt_resample
+    from geoxgb._utils import _sigmoid as _sig
+    from sklearn.tree import DecisionTreeRegressor
+    import numpy as np
+
+    y_k   = (y_enc == k).astype(np.float64)
+    y_cls = y_k.astype(int)
+
+    n_rounds        = params["n_rounds"]
+    learning_rate   = params["learning_rate"]
+    refit_interval  = params["refit_interval"]
+    max_depth       = params["max_depth"]
+    min_samples_leaf = params["min_samples_leaf"]
+    tree_criterion  = params["tree_criterion"]
+    random_state    = params["random_state"]
+    lr_schedule     = params["lr_schedule"]
+    class_weights   = params["class_weights"]   # ndarray (n_classes,) or None
+    cache_geometry  = params["cache_geometry"]
+
+    hvrt_kw = dict(
+        reduce_ratio     = params["reduce_ratio"],
+        expand_ratio     = params["expand_ratio"],
+        y_weight         = params["y_weight"],
+        n_partitions     = params["n_partitions"],
+        method           = params["method"],
+        variance_weighted= params["variance_weighted"],
+        bandwidth        = params["bandwidth"],
+        auto_noise       = params["auto_noise"],
+        feature_types    = params["feature_types"],
+        random_state     = random_state,
+        auto_expand      = params["auto_expand"],
+        min_train_samples= params["min_train_samples"],
+        is_classifier    = True,
+        min_samples_leaf = params["hvrt_min_samples_leaf"],
+    )
+
+    # Initial resample
+    res = hvrt_resample(X, y_k, y_cls=y_cls, **hvrt_kw)
+    Xr  = res.X
+    yr  = np.clip(res.y, 0, 1)
+
+    resample_history = [{
+        "round":            0,
+        "trace":            res.trace,
+        "hvrt_model":       res.hvrt_model,
+        "noise_modulation": res.noise_modulation,
+        "n_samples":        len(res.X),
+        "n_reduced":        res.n_reduced,
+        "n_expanded":       res.n_expanded,
+    }]
+
+    hvrt_cache_k = res.hvrt_model if cache_geometry else None
+
+    p_k       = np.clip(np.mean(yr), 1e-6, 1 - 1e-6)
+    init_pred = float(np.log(p_k / (1 - p_k)))
+
+    preds      = np.full(len(Xr), init_pred)
+    preds_on_X = np.full(len(X),  init_pred)
+    trees_k    = []
+    lr_vals_k  = []
+
+    for i in range(n_rounds):
+        lr_i = (
+            float(lr_schedule(i, n_rounds, learning_rate))
+            if lr_schedule is not None
+            else learning_rate
+        )
+
+        if refit_interval is not None and i > 0 and i % refit_interval == 0:
+            grads_orig = (y_enc == k).astype(float) - _sig(preds_on_X)
+            if class_weights is not None:
+                grads_orig *= np.where(y_enc == k, class_weights[k], 1.0)
+
+            res = hvrt_resample(
+                X, grads_orig, y_cls=y_cls, hvrt_cache=hvrt_cache_k, **hvrt_kw
+            )
+            Xr = res.X
+
+            if res.n_expanded == 0:
+                preds_on_Xr = preds_on_X[res.red_idx]
+            else:
+                preds_on_Xr = np.full(len(Xr), init_pred)
+                for t, lr in zip(trees_k, lr_vals_k):
+                    preds_on_Xr += lr * t.predict(Xr)
+
+            yr    = np.clip(res.y + _sig(preds_on_Xr), 0.0, 1.0)
+            preds = preds_on_Xr
+            resample_history.append({
+                "round":            i,
+                "trace":            res.trace,
+                "hvrt_model":       res.hvrt_model,
+                "noise_modulation": res.noise_modulation,
+                "n_samples":        len(res.X),
+                "n_reduced":        res.n_reduced,
+                "n_expanded":       res.n_expanded,
+            })
+
+        probs = _sig(preds)
+        grads = np.clip(yr, 0, 1) - probs
+        if class_weights is not None:
+            grads *= np.where(yr > 0.5, class_weights[k], 1.0)
+
+        tree = DecisionTreeRegressor(
+            criterion        = tree_criterion,
+            max_depth        = max_depth,
+            min_samples_leaf = min_samples_leaf,
+            random_state     = random_state + i + k * n_rounds,
+        )
+        tree.fit(Xr, grads)
+        leaf_preds_Xr = tree.predict(Xr)
+        leaf_preds_X  = tree.predict(X)
+        preds        += lr_i * leaf_preds_Xr
+        preds_on_X   += lr_i * leaf_preds_X
+        trees_k.append(tree)
+        lr_vals_k.append(lr_i)
+
+    return trees_k, init_pred, lr_vals_k, resample_history, len(Xr)
+
+
+# ---------------------------------------------------------------------------
+# Classifier class
+# ---------------------------------------------------------------------------
 
 class GeoXGBClassifier(_GeoXGBBase):
     """
@@ -29,6 +167,15 @@ class GeoXGBClassifier(_GeoXGBBase):
         Interacts with HVRT curation: HVRT preserves minority-class geometric
         diversity; ``class_weight`` amplifies the gradient signal from those
         partitions.  Neither substitutes for the other on heavily imbalanced data.
+
+    n_jobs : int, default 1
+        Number of parallel jobs for multiclass training. Each class ensemble
+        (one-vs-rest) is trained independently and can run in parallel.
+        Follows the sklearn convention: ``1`` = sequential, ``-1`` = all CPUs.
+        Has no effect on binary classification or regression.
+
+        Note: ``lr_schedule``, if provided, must be a picklable callable
+        (module-level function) when ``n_jobs != 1``.
 
     All other parameters are inherited from GeoXGBRegressor / _GeoXGBBase.
     """
@@ -140,75 +287,49 @@ class GeoXGBClassifier(_GeoXGBBase):
     # ------------------------------------------------------------------
 
     def _fit_multiclass(self, X, y_enc):
-        """K one-vs-rest ensembles with per-class gradient boosting."""
-        self._mc_trees = []
+        """K one-vs-rest ensembles, optionally trained in parallel (n_jobs)."""
+        params = dict(
+            n_rounds         = self.n_rounds,
+            learning_rate    = self.learning_rate,
+            refit_interval   = self.refit_interval,
+            max_depth        = self.max_depth,
+            min_samples_leaf = self.min_samples_leaf,
+            tree_criterion   = self.tree_criterion,
+            random_state     = self.random_state,
+            lr_schedule      = self.lr_schedule,
+            class_weights    = self._class_weights,
+            cache_geometry   = self.cache_geometry,
+            reduce_ratio     = self.reduce_ratio,
+            expand_ratio     = self.expand_ratio,
+            y_weight         = self.y_weight,
+            n_partitions     = self.n_partitions,
+            method           = self.method,
+            variance_weighted= self.variance_weighted,
+            bandwidth        = self.bandwidth,
+            auto_noise       = self.auto_noise,
+            feature_types    = self._feature_types,
+            auto_expand      = self.auto_expand,
+            min_train_samples= self.min_train_samples,
+            hvrt_min_samples_leaf = self.hvrt_min_samples_leaf,
+        )
+
+        results = Parallel(n_jobs=self.n_jobs, prefer="processes")(
+            delayed(_fit_class_worker)(k, X, y_enc, params)
+            for k in range(self._n_classes)
+        )
+
+        self._mc_trees      = []
         self._mc_init_preds = []
+        self._resample_history = []
 
-        for k in range(self._n_classes):
-            y_k = (y_enc == k).astype(np.float64)
-
-            # Set class labels for class-conditional noise estimation (UPDATE-003)
-            self._y_cls_orig = y_k.astype(int)
-
-            res = self._do_resample(X, y_k)
-            Xr, yr = res.X, np.clip(res.y, 0, 1)
-            self._record_resample(0, res)
-
-            # Cache HVRT geometry for class k (reused at every refit interval)
-            hvrt_cache_k = res.hvrt_model if self.cache_geometry else None
-
-            p_k = np.clip(np.mean(yr), 1e-6, 1 - 1e-6)
-            init_pred = float(np.log(p_k / (1 - p_k)))
-            self._mc_init_preds.append(init_pred)
-
-            preds = np.full(len(Xr), init_pred)
-            preds_on_X = np.full(len(X), init_pred)  # incremental predictions on full X
-            trees_k = []
-
-            for i in range(self.n_rounds):
-                if (
-                    self.refit_interval is not None
-                    and i > 0
-                    and i % self.refit_interval == 0
-                ):
-                    # Use incrementally-tracked preds_on_X — eliminates O(i × n) loop over trees_k
-                    grads_orig = (y_enc == k).astype(float) - _sigmoid(preds_on_X)
-                    if self._class_weights is not None:
-                        grads_orig *= np.where(
-                            y_enc == k, self._class_weights[k], 1.0
-                        )
-
-                    # Reset class labels before refit resample
-                    self._y_cls_orig = y_k.astype(int)
-                    res = self._do_resample(X, grads_orig, hvrt_cache=hvrt_cache_k)
-                    Xr = res.X
-
-                    preds_on_Xr = np.full(len(Xr), init_pred)
-                    for t in trees_k:
-                        preds_on_Xr += self.learning_rate * t.predict(Xr)
-                    # Correct target reconstruction (UPDATE-005)
-                    yr = self._targets_from_gradients(res.y, preds_on_Xr)
-                    preds = preds_on_Xr
-                    self._record_resample(i, res)
-
-                probs = _sigmoid(preds)
-                grads = np.clip(yr, 0, 1) - probs
-                if self._class_weights is not None:
-                    grads *= np.where(yr > 0.5, self._class_weights[k], 1.0)
-
-                tree = DecisionTreeRegressor(
-                    max_depth=self.max_depth,
-                    min_samples_leaf=self.min_samples_leaf,
-                    random_state=self.random_state + i + k * self.n_rounds,
-                )
-                tree.fit(Xr, grads)
-                preds += self.learning_rate * tree.predict(Xr)
-                preds_on_X += self.learning_rate * tree.predict(X)  # keep X predictions current
-                trees_k.append(tree)
-
+        for k, (trees_k, init_pred, lr_vals_k, history_k, n_resampled) in enumerate(results):
             self._mc_trees.append(trees_k)
+            self._mc_init_preds.append(init_pred)
+            self._resample_history.extend(history_k)
+            if k == 0:
+                self._lr_values = lr_vals_k
 
-        self._train_n_resampled = len(Xr)
+        self._train_n_resampled = n_resampled
 
     # ------------------------------------------------------------------
     # Prediction
@@ -256,8 +377,12 @@ class GeoXGBClassifier(_GeoXGBBase):
         logits = np.zeros((len(X), self._n_classes))
         for k in range(self._n_classes):
             lo = np.full(len(X), self._mc_init_preds[k])
-            for t in self._mc_trees[k]:
-                lo += self.learning_rate * t.predict(X)
+            if self._lr_values:
+                for t, lr in zip(self._mc_trees[k], self._lr_values):
+                    lo += lr * t.predict(X)
+            else:
+                for t in self._mc_trees[k]:
+                    lo += self.learning_rate * t.predict(X)
             logits[:, k] = lo
 
         logits -= logits.max(axis=1, keepdims=True)

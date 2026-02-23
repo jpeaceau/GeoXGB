@@ -21,7 +21,9 @@ class _GeoXGBBase:
         "n_partitions", "hvrt_min_samples_leaf", "reduce_ratio", "expand_ratio",
         "y_weight", "method", "variance_weighted", "bandwidth", "refit_interval",
         "auto_noise", "auto_expand", "min_train_samples", "random_state",
-        "cache_geometry",
+        "cache_geometry", "lr_schedule", "tree_criterion", "n_jobs",
+        "generation_strategy", "adaptive_bandwidth", "convergence_tol",
+        "feature_weights",
     )
 
     # Subclasses set this to True to enable class-conditional noise estimation
@@ -29,9 +31,9 @@ class _GeoXGBBase:
 
     def __init__(
         self,
-        n_rounds=100,
-        learning_rate=0.1,
-        max_depth=6,
+        n_rounds=1000,
+        learning_rate=0.2,
+        max_depth=4,
         min_samples_leaf=5,
         n_partitions=None,
         hvrt_min_samples_leaf=None,
@@ -40,13 +42,20 @@ class _GeoXGBBase:
         y_weight=0.5,
         method="fps",
         variance_weighted=True,
-        bandwidth=0.5,
-        refit_interval=10,
+        bandwidth="auto",
+        refit_interval=20,
         auto_noise=True,
         auto_expand=True,
         min_train_samples=5000,
         random_state=42,
         cache_geometry=False,
+        lr_schedule=None,
+        tree_criterion="squared_error",
+        n_jobs=1,
+        generation_strategy="epanechnikov",
+        adaptive_bandwidth=False,
+        convergence_tol=None,
+        feature_weights=None,
     ):
         self.n_rounds = n_rounds
         self.learning_rate = learning_rate
@@ -66,9 +75,17 @@ class _GeoXGBBase:
         self.min_train_samples = min_train_samples
         self.random_state = random_state
         self.cache_geometry = cache_geometry
+        self.lr_schedule = lr_schedule
+        self.tree_criterion = tree_criterion
+        self.n_jobs = n_jobs
+        self.generation_strategy = generation_strategy
+        self.adaptive_bandwidth = adaptive_bandwidth
+        self.convergence_tol = convergence_tol
+        self.feature_weights = feature_weights
 
         # Fitted state
         self._trees = []
+        self._lr_values = []   # per-tree effective learning rates (populated during fit)
         self._init_pred = None
         self._is_fitted = False
         self._n_features = None
@@ -78,6 +95,8 @@ class _GeoXGBBase:
         self._train_n_resampled = None
         self._y_cls_orig = None   # original integer class labels (classifier only)
         self._hvrt_cache = None   # cached HVRT geometry (reused across refits)
+        self._convergence_losses = []   # mean-abs-gradient at each refit (convergence tracking)
+        self.convergence_round_ = None  # round at which early stopping fired (None = ran to completion)
 
     # ------------------------------------------------------------------
     # Resample delegate
@@ -102,6 +121,9 @@ class _GeoXGBBase:
             y_cls=self._y_cls_orig,
             hvrt_cache=hvrt_cache,
             min_samples_leaf=self.hvrt_min_samples_leaf,
+            generation_strategy=self.generation_strategy,
+            adaptive_bandwidth=self.adaptive_bandwidth,
+            feature_weights=self.feature_weights,
         )
 
     # ------------------------------------------------------------------
@@ -132,8 +154,12 @@ class _GeoXGBBase:
     def _raw_predict(self, X):
         X = np.asarray(X, dtype=np.float64)
         p = np.full(X.shape[0], self._init_pred)
-        for t in self._trees:
-            p += self.learning_rate * t.predict(X)
+        if self._lr_values:
+            for t, lr in zip(self._trees, self._lr_values):
+                p += lr * t.predict(X)
+        else:
+            for t in self._trees:
+                p += self.learning_rate * t.predict(X)
         return p
 
     # ------------------------------------------------------------------
@@ -169,8 +195,21 @@ class _GeoXGBBase:
         preds = np.full(len(Xr), self._init_pred)
         preds_on_X = np.full(len(X), self._init_pred)  # incremental predictions on full X
         self._trees = []
+        self._lr_values = []
+        self._convergence_losses = []
+        self.convergence_round_ = None
+
+        # Record initial gradient magnitude as the baseline for convergence tracking
+        if self.convergence_tol is not None:
+            _init_grads = self._compute_gradients(y, preds_on_X)
+            self._convergence_losses.append(float(np.mean(np.abs(_init_grads))))
 
         for i in range(self.n_rounds):
+            lr_i = (
+                float(self.lr_schedule(i, self.n_rounds, self.learning_rate))
+                if self.lr_schedule is not None
+                else self.learning_rate
+            )
             if (
                 self.refit_interval is not None
                 and i > 0
@@ -178,9 +217,35 @@ class _GeoXGBBase:
             ):
                 # Use incrementally-tracked preds_on_X — avoids O(i × n) _raw_predict(X)
                 grads_orig = self._compute_gradients(y, preds_on_X)
+
+                # Convergence check: stop if gradient improvement over the last
+                # 2 refit cycles is below convergence_tol (done before the
+                # resample to avoid wasted compute on a converged model).
+                if self.convergence_tol is not None:
+                    loss_now = float(np.mean(np.abs(grads_orig)))
+                    self._convergence_losses.append(loss_now)
+                    if len(self._convergence_losses) >= 3:
+                        prev = self._convergence_losses[-3]
+                        rel_improvement = (prev - loss_now) / (prev + 1e-12)
+                        if rel_improvement < self.convergence_tol:
+                            self.convergence_round_ = i
+                            break
+
                 res = self._do_resample(X, grads_orig, hvrt_cache=self._hvrt_cache)
                 Xr = res.X
-                preds_on_Xr = self._raw_predict(Xr)
+                # Fast path: when Xr contains only real samples (no synthetic
+                # expansion), index into the incrementally-maintained preds_on_X
+                # tracker.  Fancy indexing returns a copy so preds_on_X is safe.
+                # This replaces an O(i × |Xr|) loop over all trees with O(|Xr|),
+                # converting the quadratic refit cost to linear.
+                #
+                # When synthetic samples are present (n_expanded > 0), fall back
+                # to _raw_predict on the full Xr: batching real + synthetic in one
+                # contiguous predict call is faster than splitting into two loops.
+                if res.n_expanded == 0:
+                    preds_on_Xr = preds_on_X[res.red_idx]
+                else:
+                    preds_on_Xr = self._raw_predict(Xr)
                 # Reconstruct targets: regression uses additive residuals;
                 # classifier recovers class probabilities via sigmoid (UPDATE-005)
                 yr = self._targets_from_gradients(res.y, preds_on_Xr)
@@ -190,14 +255,18 @@ class _GeoXGBBase:
 
             grads = self._compute_gradients(yr, preds)
             tree = DecisionTreeRegressor(
+                criterion=self.tree_criterion,
                 max_depth=self.max_depth,
                 min_samples_leaf=self.min_samples_leaf,
                 random_state=self.random_state + i,
             )
             tree.fit(Xr, grads)
-            preds += self.learning_rate * tree.predict(Xr)
-            preds_on_X += self.learning_rate * tree.predict(X)  # keep X predictions current
+            leaf_preds_Xr = tree.predict(Xr)
+            leaf_preds_X  = tree.predict(X)
+            preds        += lr_i * leaf_preds_Xr
+            preds_on_X   += lr_i * leaf_preds_X
             self._trees.append(tree)
+            self._lr_values.append(lr_i)
 
         self._is_fitted = True
 
@@ -319,7 +388,7 @@ class _GeoXGBBase:
             "reduced_n": last["n_reduced"],
             "expanded_n": last["n_expanded"],
             "total_training": total,
-            "reduction_ratio": round(total / self._train_n_original, 3),
+            "reduction_ratio": round(last["n_reduced"] / self._train_n_original, 3),
         }
 
     def noise_estimate(self):
@@ -355,12 +424,80 @@ class _GeoXGBBase:
         """Iterate over every weak learner (overridden by multiclass)."""
         return iter(self._trees)
 
+    def save(self, path):
+        """
+        Save the fitted model to disk.
+
+        Uses joblib serialisation (pickle-compatible).  All trees and fitted
+        state are preserved.  HVRT raw-data arrays (``X_``, ``X_z_``) are
+        stripped from resample history before serialisation to keep file sizes
+        manageable — the partition tree structure used for interpretability is
+        retained.  The model remains fully functional for prediction after
+        loading; only ``expand()`` on the HVRT instances is unavailable.
+
+        Parameters
+        ----------
+        path : str or Path
+            Destination file path (e.g. ``"heart_disease.pkl"``).
+
+        Examples
+        --------
+        >>> model.save("heart_disease.pkl")
+        >>> from geoxgb import load_model
+        >>> model = load_model("heart_disease.pkl")
+        """
+        import copy
+        import joblib
+
+        # Strip heavy HVRT raw-data arrays from each resample-history entry
+        # before pickling.  This can reduce file size by 10–100× on large
+        # datasets (each HVRT instance stores a copy of its full training X).
+        # The sklearn decision tree inside each HVRT is kept intact so that
+        # partition_feature_importances() and partition_tree_rules() continue
+        # to work on the loaded model.
+        slim = copy.copy(self)          # shallow copy of the model
+        slim_history = []
+        for entry in self._resample_history:
+            e2 = dict(entry)            # shallow copy of the entry dict
+            if "hvrt_model" in e2 and e2["hvrt_model"] is not None:
+                hm = copy.copy(e2["hvrt_model"])  # shallow copy of HVRT
+                # Null out the large data arrays; keep tree_ and metadata
+                for attr in ("X_", "X_z_", "partition_ids_"):
+                    if hasattr(hm, attr):
+                        object.__setattr__(hm, attr, None)
+                e2["hvrt_model"] = hm
+            slim_history.append(e2)
+        slim._resample_history = slim_history
+
+        joblib.dump(slim, path)
+
+    @classmethod
+    def load(cls, path):
+        """
+        Load a model previously saved with ``.save()``.
+
+        Parameters
+        ----------
+        path : str or Path
+
+        Returns
+        -------
+        GeoXGBRegressor | GeoXGBClassifier
+        """
+        import joblib
+        return joblib.load(path)
+
     def _check_fitted(self):
         if not self._is_fitted:
             raise RuntimeError("Model not fitted. Call .fit(X, y) first.")
 
     def __repr__(self):
-        s = "fitted" if self._is_fitted else "unfitted"
+        if not self._is_fitted:
+            s = "unfitted"
+        elif self.convergence_round_ is not None:
+            s = f"fitted, converged at round {self.convergence_round_}/{self.n_rounds}"
+        else:
+            s = "fitted"
         return (
             f"{self.__class__.__name__}({s}, n_rounds={self.n_rounds}, "
             f"refit_interval={self.refit_interval}, "

@@ -20,6 +20,7 @@ def _fitted_model(expand_ratio=0.0):
     reg = GeoXGBRegressor(
         n_rounds=30, refit_interval=10,
         expand_ratio=expand_ratio, random_state=0,
+        auto_expand=False, hvrt_min_samples_leaf=20,
     )
     reg.fit(X, y)
     return reg

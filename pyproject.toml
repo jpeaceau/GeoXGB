@@ -7,16 +7,17 @@ name = "geoxgb"
 version = "0.1.1"
 description = "Geometry-aware gradient boosting with HVRT-powered sample curation"
 readme = "README.md"
-license = {text = "MIT"}
+license = "MIT"
 requires-python = ">=3.10"
 dependencies = [
     "numpy",
     "scikit-learn",
-    "hvrt>=2.1.1",
+    "hvrt>=2.2.0",
 ]
 
 [project.optional-dependencies]
 dev = ["pytest", "pytest-cov"]
+optimizer = ["optuna>=3.0"]
 
 [tool.setuptools.packages.find]
 where = ["src"]

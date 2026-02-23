@@ -12,6 +12,7 @@ class _ResampleResult:
     __slots__ = (
         "X", "y", "hvrt_model", "trace", "noise_modulation",
         "n_reduced", "n_expanded", "n_original",
+        "red_idx",   # indices into original X that produced the reduced real samples
     )
 
     def __init__(self, **kw):
@@ -66,6 +67,9 @@ def hvrt_resample(
     y_cls=None,
     hvrt_cache=None,
     min_samples_leaf=None,
+    generation_strategy=None,
+    adaptive_bandwidth=False,
+    feature_weights=None,
 ):
     """
     Geometry-aware resample via HVRT.
@@ -108,12 +112,31 @@ def hvrt_resample(
                                         the cached model's geometry (tree_,
                                         partition_ids_, X_z_, KDEs).
     min_samples_leaf : int | None — passed to HVRT. None = HVRT auto-tunes.
+    generation_strategy : str | None — KDE sampling strategy passed to expand().
+        None = multivariate KDE (default). 'epanechnikov', 'univariate_kde_copula',
+        'bootstrap_noise', or a custom callable are also accepted.
+    adaptive_bandwidth : bool — if True, scale per-partition KDE bandwidth with
+        local expansion ratio. Only valid with the default multivariate KDE strategy.
+    feature_weights : array-like of shape (p,) | None — per-feature scaling applied
+        to X *before* HVRT sees it.  Features with weight > 1 dominate the geometry;
+        weight < 1 de-emphasizes them.  Trees are always fitted on the original
+        unscaled X.  Use ``Gardener.recommend_feature_weights()`` to derive weights
+        from the boosting vs partition importance divergence.
 
     Returns
     -------
     _ResampleResult
     """
     n_orig = len(X)
+
+    # Scale X for HVRT geometry if feature_weights are provided.
+    # Trees are always fitted on the original unscaled X (via red_idx).
+    if feature_weights is not None:
+        fw = np.asarray(feature_weights, dtype=np.float64)
+        X_hvrt = X * fw[np.newaxis, :]
+    else:
+        fw = None
+        X_hvrt = X
 
     if hvrt_cache is not None:
         hvrt_model = hvrt_cache
@@ -125,14 +148,15 @@ def hvrt_resample(
             n_partitions=n_partitions,
             min_samples_leaf=min_samples_leaf,
         )
-        hvrt_model.fit(X, y=y, feature_types=feature_types)
+        hvrt_model.fit(X_hvrt, y=y, feature_types=feature_types)
 
-    # Noise estimation: class-conditional for classifiers, global for regressors
+    # Noise estimation: class-conditional for classifiers, global for regressors.
+    # Pass X_hvrt so _to_z() operates in the same space HVRT was fitted on.
     if auto_noise:
         if is_classifier and y_cls is not None:
-            noise_mod = estimate_noise_modulation_classifier(hvrt_model, y_cls, X)
+            noise_mod = estimate_noise_modulation_classifier(hvrt_model, y_cls, X_hvrt)
         else:
-            noise_mod = estimate_noise_modulation(hvrt_model)
+            noise_mod = estimate_noise_modulation(hvrt_model, y, X_hvrt)
     else:
         noise_mod = 1.0
 
@@ -141,26 +165,33 @@ def hvrt_resample(
     eff_reduce = min(eff_reduce, 1.0)
 
     n_reduce = max(10, int(n_orig * eff_reduce))
-    X_red, red_idx = hvrt_model.reduce(
+    X_red_hvrt, red_idx = hvrt_model.reduce(
         n=n_reduce,
         method=method,
         variance_weighted=variance_weighted,
         return_indices=True,
     )
+    # Use unscaled X for tree training; keep X_red_hvrt for KDE y-assignment.
+    X_red = X[red_idx] if fw is not None else X_red_hvrt
     y_red = y[red_idx]
     n_reduced = len(X_red)
 
     n_expanded = 0
     if expand_ratio > 0:
-        # Manual KDE expansion
-        n_expand = max(0, int(n_orig * expand_ratio * noise_mod))
+        # Manual KDE expansion.  Floor noise_mod at 0.1 so expansion always
+        # happens when the user explicitly sets expand_ratio > 0, even on
+        # noisy datasets where noise_mod ≈ 0.
+        n_expand = max(0, int(n_orig * expand_ratio * max(noise_mod, 0.1)))
         if n_expand > 0:
-            X_syn = hvrt_model.expand(
+            X_syn_hvrt = hvrt_model.expand(
                 n=n_expand,
                 variance_weighted=variance_weighted,
                 bandwidth=bandwidth,
+                generation_strategy=generation_strategy,
+                adaptive_bandwidth=adaptive_bandwidth,
             )
-            y_syn = _knn_assign_y(X_syn, X_red, y_red, hvrt_model)
+            y_syn = _knn_assign_y(X_syn_hvrt, X_red_hvrt, y_red, hvrt_model)
+            X_syn = (X_syn_hvrt / fw[np.newaxis, :]) if fw is not None else X_syn_hvrt
             X_out = np.vstack([X_red, X_syn])
             y_out = np.concatenate([y_red, y_syn])
             n_expanded = n_expand
@@ -171,12 +202,15 @@ def hvrt_resample(
         # Auto-expand: bring training set up to min_train_samples (UPDATE-001).
         # Expands from the full original distribution (HVRT fitted on all of X).
         n_expand = min_train_samples - n_reduced
-        X_syn = hvrt_model.expand(
+        X_syn_hvrt = hvrt_model.expand(
             n=n_expand,
             variance_weighted=variance_weighted,
             bandwidth=bandwidth,
+            generation_strategy=generation_strategy,
+            adaptive_bandwidth=adaptive_bandwidth,
         )
-        y_syn = _knn_assign_y(X_syn, X_red, y_red, hvrt_model)
+        y_syn = _knn_assign_y(X_syn_hvrt, X_red_hvrt, y_red, hvrt_model)
+        X_syn = (X_syn_hvrt / fw[np.newaxis, :]) if fw is not None else X_syn_hvrt
         X_out = np.vstack([X_red, X_syn])
         y_out = np.concatenate([y_red, y_syn])
         n_expanded = n_expand
@@ -193,4 +227,5 @@ def hvrt_resample(
         n_reduced=n_reduced,
         n_expanded=n_expanded,
         n_original=n_orig,
+        red_idx=red_idx,
     )

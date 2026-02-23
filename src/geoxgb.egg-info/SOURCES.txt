@@ -8,6 +8,7 @@ src/geoxgb/_noise.py
 src/geoxgb/_resampling.py
 src/geoxgb/_utils.py
 src/geoxgb/classifier.py
+src/geoxgb/optimizer.py
 src/geoxgb/regressor.py
 src/geoxgb/report.py
 src/geoxgb.egg-info/PKG-INFO

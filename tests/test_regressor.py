@@ -91,10 +91,13 @@ def test_noisy_linear():
 def test_density_dependent():
     # Dense cluster (80%) + sparse cluster (20%)
     n_dense, n_sparse = 400, 100
-    X_dense = RNG.normal([0, 0], 0.3, (n_dense, 2))
-    X_sparse = RNG.normal([5, 5], 1.0, (n_sparse, 2))
+    X_dense = RNG.normal(0.0, 0.3, (n_dense, 2))
+    X_sparse = RNG.normal(5.0, 1.0, (n_sparse, 2))
     X = np.vstack([X_dense, X_sparse])
     y = X[:, 0] * 2 + X[:, 1]
+    # Shuffle so both clusters appear in train and test (avoids extrapolation-only split)
+    idx = RNG.permutation(len(X))
+    X, y = X[idx], y[idx]
     geo = _geo_r2(X, y)
     van = _vanilla_r2(X, y)
     assert geo >= van - 0.01, f"GeoXGB R²={geo:.4f} vs VanillaGB R²={van:.4f}"

@@ -1,51 +1,67 @@
 import numpy as np
+from sklearn.neighbors import NearestNeighbors
 
 
-def estimate_noise_modulation(hvrt_model):
+def estimate_noise_modulation(hvrt_model, y, X):
     """
-    Estimate signal-to-noise from HVRT partition structure (regression path).
+    Estimate signal-to-noise via k-NN local-mean variance (regression path).
 
-    Uses between-partition variance of ``mean_abs_z`` (structural signal)
-    relative to total variance (between + within).  Clean data → partitions
-    capture real structure → high between-partition, low within-partition
-    variance.  Noisy data → partitions capture noise → low between, high
-    within.
+    Measures the fraction of y variance explained by local neighborhood means
+    in HVRT z-score space.  Clean data → nearby samples (in X-space) have
+    similar y values → local means vary widely → high signal-to-noise ratio →
+    high modulation.  Noisy data → local means are dominated by noise and vary
+    little relative to total y variance → low modulation → ``eff_reduce → 1.0``
+    (keep all samples), which is the correct behaviour.
+
+    This approach is robust regardless of the number of HVRT partitions: it
+    operates in the same z-score space as HVRT but uses k-NN smoothing to
+    directly measure y predictability from X, rather than relying on the
+    partition count or structure.
 
     Formula
     -------
-    explained = between / (between + within)
-    modulation = clip((explained - 0.05) / 0.25, 0, 1)
+    local_mean_i = mean(y[k-nearest-neighbours(i)])    (excludes self)
+    snr          = Var(local_means) / Var(y)
+    modulation   = clip((snr − 0.15) / 0.45, 0, 1)
 
     This maps:
-      - explained > 0.30 → modulation = 1.0  (clean, full resampling)
-      - explained < 0.05 → modulation = 0.0  (noisy, pass-through)
+      - snr > 0.60 → modulation = 1.0  (clean, full resampling)
+      - snr < 0.15 → modulation = 0.0  (noisy, pass-through)
+
+    The lower threshold (0.15) comfortably exceeds the expected snr of pure
+    white noise with k=10 neighbours (≈ 1/k = 0.10), ensuring pure-noise
+    datasets are correctly identified as such.
 
     Parameters
     ----------
     hvrt_model : fitted HVRT instance
+    y : ndarray of shape (n,)
+        Gradient signal (residuals or raw targets) for each sample in X.
+    X : ndarray of shape (n, p)
+        Original feature matrix (z-scored internally via hvrt_model._to_z).
 
     Returns
     -------
-    float in [0, 1] : 1.0 = clean, 0.0 = pure noise
+    float in [0, 1] : 1.0 = clean signal, 0.0 = pure noise
     """
-    partitions = hvrt_model.get_partitions()
-    if len(partitions) < 2:
+    y = np.asarray(y, dtype=float)
+    y_var = y.var()
+    if y_var < 1e-12:
         return 1.0
 
-    sizes = np.array([p["size"] for p in partitions], dtype=float)
-    variances = np.array([p["variance"] for p in partitions])
-    mean_abs_z = np.array([p["mean_abs_z"] for p in partitions])
+    X_z = hvrt_model._to_z(X)
+    N = len(y)
+    k = min(10, max(3, N // 30))
 
-    total_n = sizes.sum()
-    grand_mean = np.average(mean_abs_z, weights=sizes)
-    between = np.sum(sizes * (mean_abs_z - grand_mean) ** 2) / total_n
-    within = np.average(variances, weights=sizes)
+    nn = NearestNeighbors(n_neighbors=k + 1, algorithm="auto")
+    nn.fit(X_z)
+    _, indices = nn.kneighbors(X_z)
 
-    if (between + within) < 1e-12:
-        return 1.0
+    # Local mean y for each sample, excluding self (column 0 is self)
+    local_means = np.array([y[indices[i, 1:]].mean() for i in range(N)])
 
-    explained = between / (between + within)
-    return float(np.clip((explained - 0.05) / 0.25, 0.0, 1.0))
+    snr = local_means.var() / y_var
+    return float(np.clip((snr - 0.15) / 0.45, 0.0, 1.0))
 
 
 def estimate_noise_modulation_classifier(hvrt_model, y_cls, X):
