@@ -4,7 +4,7 @@ All notable changes to GeoXGB are documented here.
 
 ---
 
-## [0.1.3] — 2026-02-24
+## [0.1.4] — 2026-02-24
 
 ### New features
 
@@ -61,15 +61,39 @@ All notable changes to GeoXGB are documented here.
   regardless of the user's setting. Fixed to match the manual `expand_ratio`
   branch.
 
-- **Refit skipped when noise modulation collapses** (`_base.py`): a scheduled
-  HVRT refit is now skipped when `auto_noise=True` and the previous resample's
-  `noise_modulation < 0.05`. Refitting HVRT on near-zero residuals (converged
-  gradients) produces poor partition geometry; auto_expand then fills the
-  training set with near-zero-gradient synthetic samples that dilute the real
-  signal. When a skip is triggered, `preds` is re-synced from the incremental
-  `preds_on_X` tracker and training continues on the frozen Xr/yr from the
-  last meaningful resample. This primarily benefits small datasets where
-  boosting converges in tens of rounds (e.g. `n < 500`).
+- **Look-ahead refit discard when noise modulation collapses** (`_base.py`):
+  the refit logic now uses a two-stage noise guard.  First, a _look-ahead_
+  check inspects the noise_modulation of the **freshly fitted** HVRT before
+  committing its geometry: if `noise_mod < 0.05`, the new geometry is discarded
+  and the previous valid Xr/yr are retained — refitting HVRT on near-zero
+  residuals produces structureless partitions that flood the training set with
+  synthetic noise-carrying samples.  Second, `_last_refit_noise` is always
+  updated (even on a discarded resample), so all subsequent refit intervals are
+  skipped cheaply via the existing `_skip_refit` path without re-running HVRT.
+  Previously only the _prior_ refit's noise was checked, which meant the first
+  post-convergence geometry commit (typically round 20 on small datasets) was
+  never intercepted, degrading performance for all remaining rounds.
+
+  Effect on sklearn `diabetes` (n=353, 5-fold CV):
+  - Default CV R² before: 0.2608 ± 0.086 (below XGBoost default 0.3059)
+  - Default CV R² after:  **0.3393 ± 0.077** (above XGBoost default by +0.033)
+  - No change to standard benchmarks (n=1000): gradient signal persists long
+    enough that the look-ahead never discards a committed refit.
+
+  Effect on concept-drift scenario (synthetic energy demand, train regime 0
+  → test regime 1, n=1158 train / 600 test, 100 rounds):
+  - AUC before (v0.1.1): 0.7106 — GeoXGB lost to XGBoost 0.7881 (−0.0775)
+  - AUC after  (v0.1.3): **0.9478** — GeoXGB beats XGBoost by **+0.1597**
+  Under concept drift the drifted-regime gradients look structureless to the
+  regime-0 HVRT, collapsing `noise_mod` to 0. v0.1.1 committed this bad
+  geometry (poisoning rounds 20–100 with structureless synthetic samples).
+  v0.1.3 discards it and retains the regime-0 partition structure, which
+  remains more informative across both regimes than XGBoost's lag-heavy
+  representation. `Gardener.heal()` with 84 labeled new-regime samples
+  further recovers to **0.9878** (+0.036 vs v0.1.3 baseline).
+
+  `refit_noise_floor` is now a user-facing parameter (default 0.05, same as
+  the previous hard-coded constant), enabling HPO and per-dataset tuning.
 
 - **`auto_expand` capped at 5× training set size** (`_resampling.py`): the
   auto-expand target is now `min(min_train_samples, max(n_orig * 5, 1000))`.

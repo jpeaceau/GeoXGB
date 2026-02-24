@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "geoxgb"
-version = "0.1.3"
+version = "0.1.4"
 description = "Geometry-aware gradient boosting with HVRT-powered sample curation"
 readme = "README.md"
 license = "MIT"

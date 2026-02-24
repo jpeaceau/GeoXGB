@@ -32,6 +32,7 @@ class _GeoXGBBase:
         "cache_geometry", "lr_schedule", "tree_criterion", "n_jobs",
         "generation_strategy", "adaptive_bandwidth", "convergence_tol",
         "feature_weights", "assignment_strategy", "tree_splitter",
+        "refit_noise_floor",
     )
 
     # Subclasses set this to True to enable class-conditional noise estimation
@@ -66,6 +67,7 @@ class _GeoXGBBase:
         feature_weights=None,
         assignment_strategy="auto",
         tree_splitter="random",
+        refit_noise_floor=_REFIT_NOISE_FLOOR,
     ):
         self.n_rounds = n_rounds
         self.learning_rate = learning_rate
@@ -94,6 +96,7 @@ class _GeoXGBBase:
         self.feature_weights = feature_weights
         self.assignment_strategy = assignment_strategy
         self.tree_splitter = tree_splitter
+        self.refit_noise_floor = refit_noise_floor
 
         # Fitted state
         self._trees = []
@@ -199,6 +202,7 @@ class _GeoXGBBase:
         res = self._do_resample(X, y)
         Xr, yr = res.X, res.y
         _last_valid_res = res   # most recent meaningful resample (for skip path)
+        _last_refit_noise = res.noise_modulation  # track noise separately from history
         self._train_n_resampled = len(Xr)
         self._record_resample(0, res)
 
@@ -245,15 +249,12 @@ class _GeoXGBBase:
                             self.convergence_round_ = i
                             break
 
-                # Skip refit when auto_noise is active and the previous resample
-                # detected near-zero noise_modulation.  Converged gradients look
-                # structureless to the SNR estimator; fitting HVRT on them gives
-                # poor geometry and auto_expand synthesises samples carrying
-                # near-zero gradient signal that dilutes the real training set.
-                # Instead, keep the frozen Xr/yr from the last meaningful resample
-                # and only re-sync preds so gradient computation stays current.
-                _last_noise = self._resample_history[-1]["noise_modulation"]
-                _skip_refit = self.auto_noise and (_last_noise < _REFIT_NOISE_FLOOR)
+                # Skip refit when auto_noise is active and the PREVIOUS resample
+                # detected near-zero noise_modulation.  _last_refit_noise is updated
+                # on every _do_resample() call — including look-ahead discards —
+                # so once a low-noise refit is detected the skip fires cheaply on
+                # all subsequent intervals without calling _do_resample() again.
+                _skip_refit = self.auto_noise and (_last_refit_noise < self.refit_noise_floor)
 
                 if _skip_refit:
                     if _last_valid_res.n_expanded == 0:
@@ -263,27 +264,44 @@ class _GeoXGBBase:
                     # Xr, yr, self._train_n_resampled remain from last valid resample
                 else:
                     res = self._do_resample(X, grads_orig, hvrt_cache=self._hvrt_cache)
-                    _last_valid_res = res
-                    Xr = res.X
-                    # Fast path: when Xr contains only real samples (no synthetic
-                    # expansion), index into the incrementally-maintained preds_on_X
-                    # tracker.  Fancy indexing returns a copy so preds_on_X is safe.
-                    # This replaces an O(i × |Xr|) loop over all trees with O(|Xr|),
-                    # converting the quadratic refit cost to linear.
-                    #
-                    # When synthetic samples are present (n_expanded > 0), fall back
-                    # to _raw_predict on the full Xr: batching real + synthetic in one
-                    # contiguous predict call is faster than splitting into two loops.
-                    if res.n_expanded == 0:
-                        preds_on_Xr = preds_on_X[res.red_idx]
+                    # Always update the noise tracker (even if we discard the geometry)
+                    # so the next interval's skip-check uses the current signal level.
+                    _last_refit_noise = res.noise_modulation
+
+                    # Look-ahead: if the freshly-fitted HVRT reports collapsed SNR,
+                    # discard the new geometry — partitions from near-zero gradients
+                    # are unreliable and would flood the training set with synthetic
+                    # samples carrying no signal.  Re-sync preds on the still-valid
+                    # Xr from _last_valid_res; next refit intervals are then skipped
+                    # cheaply via the _skip_refit path above.
+                    if self.auto_noise and res.noise_modulation < self.refit_noise_floor:
+                        if _last_valid_res.n_expanded == 0:
+                            preds = preds_on_X[_last_valid_res.red_idx]
+                        else:
+                            preds = self._raw_predict(Xr)
+                        # Xr, yr, self._train_n_resampled stay from _last_valid_res
                     else:
-                        preds_on_Xr = self._raw_predict(Xr)
-                    # Reconstruct targets: regression uses additive residuals;
-                    # classifier recovers class probabilities via sigmoid (UPDATE-005)
-                    yr = self._targets_from_gradients(res.y, preds_on_Xr)
-                    preds = preds_on_Xr
-                    self._train_n_resampled = len(Xr)
-                    self._record_resample(i, res)
+                        _last_valid_res = res
+                        Xr = res.X
+                        # Fast path: when Xr contains only real samples (no synthetic
+                        # expansion), index into the incrementally-maintained preds_on_X
+                        # tracker.  Fancy indexing returns a copy so preds_on_X is safe.
+                        # This replaces an O(i × |Xr|) loop over all trees with O(|Xr|),
+                        # converting the quadratic refit cost to linear.
+                        #
+                        # When synthetic samples are present (n_expanded > 0), fall back
+                        # to _raw_predict on the full Xr: batching real + synthetic in one
+                        # contiguous predict call is faster than splitting into two loops.
+                        if res.n_expanded == 0:
+                            preds_on_Xr = preds_on_X[res.red_idx]
+                        else:
+                            preds_on_Xr = self._raw_predict(Xr)
+                        # Reconstruct targets: regression uses additive residuals;
+                        # classifier recovers class probabilities via sigmoid (UPDATE-005)
+                        yr = self._targets_from_gradients(res.y, preds_on_Xr)
+                        preds = preds_on_Xr
+                        self._train_n_resampled = len(Xr)
+                        self._record_resample(i, res)
 
             grads = self._compute_gradients(yr, preds)
             tree = DecisionTreeRegressor(
