@@ -12,7 +12,7 @@ requires-python = ">=3.10"
 dependencies = [
     "numpy",
     "scikit-learn",
-    "hvrt>=2.2.0",
+    "hvrt>=2.3.0",
 ]
 
 [project.optional-dependencies]

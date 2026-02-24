@@ -6,6 +6,21 @@ All notable changes to GeoXGB are documented here.
 
 ## [0.1.2] — 2026-02-24
 
+### Dependency
+
+- **Minimum HVRT version bumped to `>=2.3.0`** (was `>=2.2.0`). HVRT 2.3.0
+  delivers internal speed improvements that reduce GeoXGB's per-refit HVRT
+  overhead by ~27% (test suite: 26.6 s → 19.4 s). No API changes are required
+  in GeoXGB — all existing parameters and call signatures are fully compatible.
+  Key HVRT 2.3.0 additions (not yet used by GeoXGB): `n_jobs` parallelism for
+  KDE fitting, `FastHVRT` class (O(n·d) target computation, vs HVRT's O(n·d²)
+  pairwise interactions), `ratio=` as an alternative to `n=` in `reduce()`, and
+  `n_partitions=`/`X=` overrides on `reduce()` and `expand()`. `FastHVRT` is
+  **not recommended** for GeoXGB — it sums z-scores across features and is
+  blind to pairwise feature interactions, which are the geometric signal that
+  HVRT uses to isolate structurally important samples. Benchmarking showed
+  FastHVRT loses −0.0014 R² on Friedman #1 (an interaction dataset) vs HVRT.
+
 ### New features
 
 - **`assignment_strategy` parameter** (`GeoXGBRegressor`, `GeoXGBClassifier`,
