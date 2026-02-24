@@ -20,20 +20,30 @@ All notable changes to GeoXGB are documented here.
 
   **Design rationale:** HVRT partitions are built by fitting a decision tree
   in z-score space, making each leaf hyperplane-homogeneous with respect to
-  the data manifold. When partitions are coarse (< 50 leaves in the reduced
-  set), the within-partition region is too large to reliably represent a single
-  gradient regime, so global k-NN is the safer interpolant. Once the HVRT has
-  >= 50 distinct partitions represented in the reduced set, per-partition
-  homogeneity is guaranteed by the decision-tree construction, and IDW
-  restricted to partition members is both geometrically correct and empirically
-  beneficial. This mirrors HVRT's own `bandwidth='auto'` philosophy: the safer
-  method is selected by default and the richer method activates only when data
-  density justifies it.
+  the data manifold — samples within a leaf lie on the same side of every
+  splitting hyperplane and are geometrically coherent. When partitions are
+  coarse, the within-partition region spans a large, heterogeneous section of
+  the manifold, so global k-NN is the safer interpolant. Once the HVRT has
+  enough distinct partitions in the reduced set, per-partition homogeneity is
+  reliably guaranteed by the tree construction, and IDW restricted to
+  partition members is both geometrically principled and empirically
+  beneficial.
+
+  Testing showed that homogeneity can emerge as early as ~30 partitions on
+  well-structured datasets, but the onset is dataset-dependent (feature
+  dimensionality, correlation structure, and `hvrt_min_samples_leaf` all
+  influence it). **50 is used as the conservative safe threshold** — it is
+  reliably above the homogeneity onset across the datasets tested while still
+  activating `part-idw` for realistically large training sets. This mirrors
+  HVRT's own `bandwidth='auto'` philosophy: the safer method is selected by
+  default and the richer method activates only when data density justifies it.
 
   In practice the threshold activates around n_train >= 4 400 samples (for
   10-feature datasets with HVRT's default auto-tuned `min_samples_leaf`).
   For smaller datasets `'auto'` is equivalent to `'knn'`, preserving full
-  backward compatibility.
+  backward compatibility. Users working with finer partitioning (small
+  explicit `hvrt_min_samples_leaf`) will see the threshold activate at lower
+  n.
 
 ---
 
