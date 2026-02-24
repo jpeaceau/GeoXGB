@@ -1,6 +1,6 @@
 # GeoXGB Performance Investigation Report
 
-**Date:** 2026-02-23
+**Date:** 2026-02-24
 **Scope:** Hyperparameter tuning, runtime scaling analysis, quadratic-cost fix,
 sample-generation impact study, adaptive learning rate schedules, refit interval
 sensitivity, weak learner split criterion, max\_depth sensitivity,
@@ -8,8 +8,9 @@ regressor vs classifier comparison on binary AUC, external HVRT augmentation
 investigation, HVRT 2.2.0 compatibility update with re-benchmarking, KDE
 bandwidth and generation strategy sweep, default parameter final determination,
 epanechnikov re-benchmark under v0.1.1 final defaults, consolidated
-GeoXGB vs XGBoost performance summary, and Optuna TPE head-to-head benchmark
-(GeoXGBOptimizer fast=True vs XGBoost Optuna, 5 datasets).
+GeoXGB vs XGBoost performance summary, Optuna TPE head-to-head benchmark
+(GeoXGBOptimizer fast=True vs XGBoost Optuna, 5 datasets), and GeoXGB
+as a missing-value imputer vs mean / k-NN / XGBoost native NaN routing.
 
 ---
 
@@ -1311,6 +1312,124 @@ search (lr × rounds first, then depth × refit\_interval) is efficient.
 
 ---
 
+## 16. GeoXGB as a Missing-Value Imputer
+
+**Question:** Can a GeoXGBRegressor trained per-column (using all other features
+as predictors) produce higher-quality imputations than mean or k-NN, and does
+better imputation quality translate into better downstream prediction?
+
+### Setup
+
+- **Script:** `benchmarks/imputation_benchmark.py`
+- **Datasets:** `make_classification` (n=1500, 10 features, 6 informative, correlated)
+  and Friedman #1 regression (n=1500, 10 independent uniform features)
+- **Missingness:** MNAR — high values of features 0, 2, 4 preferentially masked
+  (30% missing rate per column)
+- **Seeds:** 5; **Train/test split:** 80/20; imputers fitted on train set only
+- **Imputers compared:** Mean (`SimpleImputer`), k-NN (k=5, `KNNImputer`), GeoXGB
+  (`GeoXGBRegressor`, 300 rounds per feature, `auto_expand=False`)
+- **Final models:** `GeoXGBClassifier` / `GeoXGBRegressor` (default params,
+  1000 rounds) trained on each imputed dataset; `XGBClassifier` / `XGBRegressor`
+  with native NaN routing as a no-imputation baseline
+
+### GeoXGBImputer design
+
+For each column with missing values: fit a `GeoXGBRegressor` on rows where
+both the target column and all predictor columns are observed; at inference,
+fill any still-missing predictors with the training-set column mean before
+predicting. This is a single-pass strategy (no iterative MICE-style updates).
+
+### Part 1 — Imputation quality (RMSE on masked test values, lower is better)
+
+**Classification dataset (correlated features):**
+
+| Method | Mean RMSE | Std |
+|--------|-----------|-----|
+| mean   | 2.3461    | 0.4292 |
+| knn    | **1.7141** | 0.2497 |
+| geoxgb | 1.7437    | 0.2502 |
+
+k-NN wins narrowly; GeoXGB is within 0.03 RMSE. Both model-based approaches
+substantially beat mean imputation (-26% RMSE) when features are correlated.
+
+**Regression / Friedman #1 (independent uniform features):**
+
+| Method | Mean RMSE | Std |
+|--------|-----------|-----|
+| mean   | **0.4309** | 0.0053 |
+| knn    | 0.4423    | 0.0071 |
+| geoxgb | 0.4461    | 0.0093 |
+
+Mean imputation wins because Friedman's features are independent — there is no
+inter-feature correlation to exploit. The global column mean is the theoretical
+optimal predictor for each masked value. k-NN and GeoXGB fit noise.
+
+### Part 2 — Downstream prediction quality
+
+**Classification (AUC):**
+
+| Model | Mean AUC | Std | vs XGBoost-native |
+|-------|----------|-----|-------------------|
+| GeoXGB(GeoXGB-imp)  | 0.9602 | 0.0036 | −0.0075 |
+| GeoXGB(kNN-imp)     | 0.9610 | 0.0050 | −0.0067 |
+| GeoXGB(mean-imp)    | 0.9632 | 0.0055 | −0.0045 |
+| XGBoost(GeoXGB-imp) | 0.9637 | 0.0036 | −0.0040 |
+| XGBoost(kNN-imp)    | 0.9623 | 0.0035 | −0.0054 |
+| XGBoost(mean-imp)   | 0.9664 | 0.0046 | −0.0013 |
+| **XGBoost(native-NaN)** | **0.9677** | 0.0036 | baseline |
+
+**Regression / Friedman #1 (R²):**
+
+| Model | Mean R² | Std | vs XGBoost-native |
+|-------|---------|-----|-------------------|
+| GeoXGB(GeoXGB-imp)  | 0.5758 | 0.0265 | −0.1374 |
+| GeoXGB(kNN-imp)     | 0.5924 | 0.0235 | −0.1208 |
+| GeoXGB(mean-imp)    | 0.6929 | 0.0188 | −0.0203 |
+| XGBoost(GeoXGB-imp) | 0.5988 | 0.0256 | −0.1144 |
+| XGBoost(kNN-imp)    | 0.6027 | 0.0238 | −0.1105 |
+| XGBoost(mean-imp)   | 0.7072 | 0.0203 | −0.0060 |
+| **XGBoost(native-NaN)** | **0.7132** | 0.0186 | baseline |
+
+### Findings
+
+1. **Better imputation quality does not improve downstream prediction.**
+   On the classification task, GeoXGB and k-NN impute more accurately than
+   mean (lower RMSE) yet produce *worse* final AUC. Mean imputation introduces
+   a consistent, learnable pattern: imputed samples cluster at the column mean,
+   and the boosting model learns to discount or route them accordingly. GeoXGB
+   and k-NN produce values that look like genuine observations — the model
+   treats them as real, adding noise rather than signal.
+
+2. **XGBoost's native NaN routing is structurally unbeatable by imputation.**
+   XGBoost finds the optimal split direction for missing values directly during
+   tree construction (routing NaN rows to whichever child minimises loss). No
+   imputation strategy can replicate this because it requires no assumptions
+   about the missing value's magnitude — only its optimal split destination.
+   On both tasks and with every imputer tested, XGBoost native leads.
+
+3. **GeoXGB imputation adds no advantage over k-NN at similar computational cost.**
+   For classification (correlated features) GeoXGB RMSE is within 1.7% of k-NN.
+   For regression (independent features) GeoXGB is beaten by the global mean.
+   The HVRT geometry provides no leverage when imputing one feature at a time
+   in isolation from the boosting objective.
+
+4. **The large regression penalty for GeoXGB/k-NN imputation (−0.11 to −0.14 R²)**
+   is explained by the MNAR mechanism: masked values are systematically high
+   (above the 70th percentile). Imputers that predict near the conditional mean
+   underestimate these values; XGBoost's native routing implicitly captures the
+   "missing = high" signal without needing to estimate the value at all.
+
+### Conclusion
+
+GeoXGB is not a competitive imputer. For users who need to handle missing data
+before passing data to GeoXGB, `sklearn.impute.SimpleImputer(strategy='mean')`
+is a reasonable default; `KNNImputer` offers marginal gains when features are
+strongly correlated. Neither improves on XGBoost's native NaN routing for
+tree-based models. Missing data handling is left to the end user; it is not
+incorporated into the GeoXGB library.
+
+---
+
 ## Files Created or Modified
 
 | File | Type | Description |
@@ -1341,3 +1460,4 @@ search (lr × rounds first, then depth × refit\_interval) is efficient.
 | `src/geoxgb/_base.py` | Modified | Added `convergence_tol` parameter; `_convergence_losses` and `convergence_round_` tracked state; early-stop check before resample at each refit event |
 | `tests/test_convergence.py` | New | 7 tests for convergence\_tol: early stopping, no-stop, losses populated, repr, classifier support, prediction after stop |
 | `benchmarks/optuna_benchmark.py` | New | Optuna TPE benchmark: GeoXGBOptimizer(fast=True, 25 trials) vs XGBoost Optuna (25 trials), 5 datasets, 3-fold CV; GeoXGB wins 4/5 |
+| `benchmarks/imputation_benchmark.py` | New | GeoXGB as imputer: per-feature GeoXGBRegressor imputation vs mean / k-NN / XGBoost native NaN; imputation quality (RMSE) and downstream prediction (AUC / R²) on classification and Friedman #1 regression with 30% MNAR; XGBoost native NaN routing wins both tasks; GeoXGB imputation offers no advantage over k-NN |
