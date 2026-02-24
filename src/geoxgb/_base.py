@@ -23,7 +23,7 @@ class _GeoXGBBase:
         "auto_noise", "auto_expand", "min_train_samples", "random_state",
         "cache_geometry", "lr_schedule", "tree_criterion", "n_jobs",
         "generation_strategy", "adaptive_bandwidth", "convergence_tol",
-        "feature_weights",
+        "feature_weights", "assignment_strategy",
     )
 
     # Subclasses set this to True to enable class-conditional noise estimation
@@ -56,6 +56,7 @@ class _GeoXGBBase:
         adaptive_bandwidth=False,
         convergence_tol=None,
         feature_weights=None,
+        assignment_strategy="auto",
     ):
         self.n_rounds = n_rounds
         self.learning_rate = learning_rate
@@ -82,6 +83,7 @@ class _GeoXGBBase:
         self.adaptive_bandwidth = adaptive_bandwidth
         self.convergence_tol = convergence_tol
         self.feature_weights = feature_weights
+        self.assignment_strategy = assignment_strategy
 
         # Fitted state
         self._trees = []
@@ -124,6 +126,7 @@ class _GeoXGBBase:
             generation_strategy=self.generation_strategy,
             adaptive_bandwidth=self.adaptive_bandwidth,
             feature_weights=self.feature_weights,
+            assignment_strategy=self.assignment_strategy,
         )
 
     # ------------------------------------------------------------------

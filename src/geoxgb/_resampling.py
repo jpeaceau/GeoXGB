@@ -20,31 +20,76 @@ class _ResampleResult:
             setattr(self, k, v)
 
 
-def _knn_assign_y(X_syn, X_red, y_red, hvrt_model):
+def _knn_assign_y(X_syn, X_red, y_red, hvrt_model, strategy="auto"):
     """
-    Assign target values to synthetic samples via k-NN weighted average
-    (k=3, inverse-distance weights in z-score space).
+    Assign target values to synthetic samples.
 
     Parameters
     ----------
     X_syn : ndarray (m, p) — synthetic sample coordinates
     X_red : ndarray (r, p) — reduced real sample coordinates
     y_red : ndarray (r,)   — target values for reduced real samples
-    hvrt_model : fitted HVRT instance (provides _to_z transformation)
+    hvrt_model : fitted HVRT instance (provides _to_z and tree_)
+    strategy : str
+        'knn'      — global inverse-distance weighted k-NN (k=3) in z-space
+        'part-idw' — intra-partition IDW; k-NN fallback for empty partitions
+        'auto'     — part-idw when X_red spans >= 50 unique HVRT partitions,
+                     k-NN otherwise (safe for sparse auto-expand regimes)
 
     Returns
     -------
     y_syn : ndarray (m,)
     """
     k = min(3, len(X_red))
-    nn = NearestNeighbors(n_neighbors=k, algorithm="auto")
     X_red_z = hvrt_model._to_z(X_red)
     X_syn_z = hvrt_model._to_z(X_syn)
-    nn.fit(X_red_z)
-    dists, idxs = nn.kneighbors(X_syn_z)
-    w = 1.0 / (dists + 1e-10)
-    w /= w.sum(axis=1, keepdims=True)
-    return np.sum(w * y_red[idxs], axis=1)
+
+    # Resolve 'auto': count unique partitions represented in the reduced set.
+    # Reuse the computed leaves for part-idw so we don't call apply() twice.
+    _red_leaves = None
+    if strategy == "auto":
+        _red_leaves = hvrt_model.tree_.apply(X_red_z.astype(np.float32))
+        strategy = "part-idw" if len(np.unique(_red_leaves)) >= 50 else "knn"
+
+    if strategy == "knn":
+        nn = NearestNeighbors(n_neighbors=k, algorithm="auto")
+        nn.fit(X_red_z)
+        dists, idxs = nn.kneighbors(X_syn_z)
+        w = 1.0 / (dists + 1e-10)
+        w /= w.sum(axis=1, keepdims=True)
+        return np.sum(w * y_red[idxs], axis=1)
+
+    # Intra-partition IDW path
+    if _red_leaves is None:
+        _red_leaves = hvrt_model.tree_.apply(X_red_z.astype(np.float32))
+    syn_leaves = hvrt_model.tree_.apply(X_syn_z.astype(np.float32))
+
+    leaf_idx = {}
+    for i, leaf in enumerate(_red_leaves):
+        leaf_idx.setdefault(leaf, []).append(i)
+
+    # Build a global k-NN fallback for synthetic samples whose partition has
+    # no reduced representatives (sparse edge case after aggressive FPS).
+    nn_fb = NearestNeighbors(n_neighbors=k, algorithm="auto")
+    nn_fb.fit(X_red_z)
+
+    y_syn = np.empty(len(X_syn))
+    for i, leaf in enumerate(syn_leaves):
+        idxs = leaf_idx.get(leaf)
+        if not idxs:
+            fb_dists, fb_idxs = nn_fb.kneighbors(X_syn_z[i : i + 1])
+            w = 1.0 / (fb_dists[0] + 1e-10)
+            w /= w.sum()
+            y_syn[i] = np.dot(w, y_red[fb_idxs[0]])
+        elif len(idxs) == 1:
+            y_syn[i] = y_red[idxs[0]]
+        else:
+            dists = np.linalg.norm(X_red_z[idxs] - X_syn_z[i], axis=1)
+            w = 1.0 / (dists + 1e-10)
+            w /= w.sum()
+            y_syn[i] = np.dot(w, y_red[idxs])
+
+    return y_syn
 
 
 def hvrt_resample(
@@ -70,6 +115,7 @@ def hvrt_resample(
     generation_strategy=None,
     adaptive_bandwidth=False,
     feature_weights=None,
+    assignment_strategy="auto",
 ):
     """
     Geometry-aware resample via HVRT.
@@ -86,8 +132,8 @@ def hvrt_resample(
        - Manual: when ``expand_ratio > 0``.
        - Auto:   when ``auto_expand=True``, ``expand_ratio == 0``, and
                  ``n_reduced < min_train_samples`` (UPDATE-001).
-    5. Assign y to synthetic samples via k-NN weighted average (k=3,
-       inverse-distance weights in z-score space).
+    5. Assign y to synthetic samples via ``assignment_strategy``
+       (default 'auto': part-idw when >= 50 partitions, k-NN otherwise).
 
     Parameters
     ----------
@@ -112,6 +158,10 @@ def hvrt_resample(
                                         the cached model's geometry (tree_,
                                         partition_ids_, X_z_, KDEs).
     min_samples_leaf : int | None — passed to HVRT. None = HVRT auto-tunes.
+    assignment_strategy : str — y-assignment method for synthetic samples.
+        'auto' (default) — part-idw when X_red spans >= 50 unique HVRT
+        partitions, global k-NN otherwise.  'knn' and 'part-idw' force the
+        respective method unconditionally.
     generation_strategy : str | None — KDE sampling strategy passed to expand().
         None = multivariate KDE (default). 'epanechnikov', 'univariate_kde_copula',
         'bootstrap_noise', or a custom callable are also accepted.
@@ -190,7 +240,8 @@ def hvrt_resample(
                 generation_strategy=generation_strategy,
                 adaptive_bandwidth=adaptive_bandwidth,
             )
-            y_syn = _knn_assign_y(X_syn_hvrt, X_red_hvrt, y_red, hvrt_model)
+            y_syn = _knn_assign_y(X_syn_hvrt, X_red_hvrt, y_red, hvrt_model,
+                                   strategy=assignment_strategy)
             X_syn = (X_syn_hvrt / fw[np.newaxis, :]) if fw is not None else X_syn_hvrt
             X_out = np.vstack([X_red, X_syn])
             y_out = np.concatenate([y_red, y_syn])

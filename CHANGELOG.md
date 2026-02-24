@@ -4,6 +4,39 @@ All notable changes to GeoXGB are documented here.
 
 ---
 
+## [0.1.2] — 2026-02-24
+
+### New features
+
+- **`assignment_strategy` parameter** (`GeoXGBRegressor`, `GeoXGBClassifier`,
+  `hvrt_resample`): controls how y-values are assigned to KDE-generated
+  synthetic samples during the expansion step.
+
+  | Value | Behaviour |
+  |---|---|
+  | `'knn'` | Global k=3 inverse-distance weighted nearest-neighbours in HVRT z-space (previous behaviour). |
+  | `'part-idw'` | Intra-partition IDW using the main HVRT tree leaf assignments. Falls back to global k-NN for partitions with no reduced representatives. |
+  | `'auto'` (default) | Selects `'part-idw'` when `X_red` spans **>= 50 unique HVRT partitions**; falls back to `'knn'` otherwise. |
+
+  **Design rationale:** HVRT partitions are built by fitting a decision tree
+  in z-score space, making each leaf hyperplane-homogeneous with respect to
+  the data manifold. When partitions are coarse (< 50 leaves in the reduced
+  set), the within-partition region is too large to reliably represent a single
+  gradient regime, so global k-NN is the safer interpolant. Once the HVRT has
+  >= 50 distinct partitions represented in the reduced set, per-partition
+  homogeneity is guaranteed by the decision-tree construction, and IDW
+  restricted to partition members is both geometrically correct and empirically
+  beneficial. This mirrors HVRT's own `bandwidth='auto'` philosophy: the safer
+  method is selected by default and the richer method activates only when data
+  density justifies it.
+
+  In practice the threshold activates around n_train >= 4 400 samples (for
+  10-feature datasets with HVRT's default auto-tuned `min_samples_leaf`).
+  For smaller datasets `'auto'` is equivalent to `'knn'`, preserving full
+  backward compatibility.
+
+---
+
 ## [0.1.1] — 2026-02-24
 
 ### Dependency

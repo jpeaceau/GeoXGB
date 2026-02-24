@@ -34,4 +34,4 @@ def load_model(path):
     return joblib.load(path)
 
 
-__version__ = "0.1.1"
+__version__ = "0.1.2"
