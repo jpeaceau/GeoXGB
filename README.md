@@ -242,6 +242,103 @@ See [`benchmarks/PERFORMANCE_REPORT.md`](benchmarks/PERFORMANCE_REPORT.md)
 for the full results including per-dataset AUC / R² tables, error complementarity
 analysis, and interpretability walkthroughs.
 
+## Causal Inference
+
+GeoXGB's geometry-aware resampling makes it a strong base estimator for CATE
+and ITE tasks. HVRT partitions covariate space into locally homogeneous
+regions that naturally align with treatment-effect subgroups; `auto_expand`
+prevents information collapse in sparse T=0/T=1 sub-populations.
+
+### ITE metalearner usage
+
+GeoXGB drops into any standard metalearner architecture:
+
+```python
+import numpy as np
+from sklearn.model_selection import train_test_split
+
+X_tr, X_te, T_tr, T_te, Y_tr, Y_te = train_test_split(X, T, Y, test_size=0.25)
+
+# T-learner
+m0 = GeoXGBRegressor(); m0.fit(X_tr[T_tr == 0], Y_tr[T_tr == 0])
+m1 = GeoXGBRegressor(); m1.fit(X_tr[T_tr == 1], Y_tr[T_tr == 1])
+tau_hat = m1.predict(X_te) - m0.predict(X_te)
+
+# S-learner — best on smooth/linear τ; HVRT treats T as a first-class
+# geometry axis alongside X, recovering T×X interactions via tree depth
+XT_tr = np.column_stack([X_tr, T_tr])
+m = GeoXGBRegressor(); m.fit(XT_tr, Y_tr)
+tau_hat = (m.predict(np.column_stack([X_te, np.ones(len(X_te))]))
+         - m.predict(np.column_stack([X_te, np.zeros(len(X_te))])))
+```
+
+PEHE benchmark on randomised trials (lower is better):
+
+| τ(x) type | GeoXGB | XGBoost | Honest R-forest¹ |
+|---|---|---|---|
+| Linear (2X₁ + 1) | **0.180** | 0.207 | 0.247 |
+| Nonlinear (2·sin(X₁π) + X₂²) | **0.408** | 0.608 | 0.796 |
+
+¹ 2-fold cross-fitted R-forest with sample-weighted RandomForestRegressor —
+the functional core of GRF. `econml` CausalForestDML unavailable on Python 3.14.
+
+### Mediation fingerprint
+
+The boost/partition importance ratio surfaces causal structure without a
+separate statistical test. Features that are causally *upstream* of Y (i.e.
+X where part of the effect passes through a mediator M) have
+`boost_imp >> partition_imp` — the gradient signal recognises X as important
+even when HVRT geometry anchors on M:
+
+```python
+part  = model.partition_feature_importances(feature_names=names)
+boost = model.feature_importances(feature_names=names)
+
+avg_part = {f: np.mean([e["importances"].get(f, 0) for e in part])
+            for f in names}
+for f in names:
+    ratio = boost[f] / (avg_part[f] + 1e-10)
+    print(f"{f}: boost/partition = {ratio:.2f}")
+# Causally upstream features show ratio >> 1
+# Mediator features show ratio < 1 (geometry anchors on them)
+```
+
+### Doubly-robust ATE
+
+For average treatment effect estimation under confounding, use GeoXGB as the
+outcome model in a doubly-robust (DR) pipeline — its nonlinear surface quality
+reduces IPW residuals and tightens the DR correction:
+
+```python
+from sklearn.linear_model import LogisticRegression
+
+prop = LogisticRegression().fit(X_tr, T_tr)
+pi   = np.clip(prop.predict_proba(X_te)[:, 1], 0.05, 0.95)
+mu0, mu1 = m0.predict(X_te), m1.predict(X_te)
+
+dr_ate = (mu1 - mu0
+          + T_te * (Y_te - mu1) / pi
+          - (1 - T_te) * (Y_te - mu0) / (1 - pi)).mean()
+```
+
+See [`notebooks/geoxgb_causal_analysis.ipynb`](notebooks/geoxgb_causal_analysis.ipynb)
+for the full analysis: mediators, colliders, CATE, ITE metalearners, and ATE.
+
+### When to use AutoITE instead
+
+If you have **panel / time-series data** — repeated observations per entity
+over time — consider [AutoITE (geo branch)](https://github.com/jpeaceau/AutoITE/tree/geo)
+instead. AutoITE is purpose-built for ITE estimation from longitudinal data,
+where the temporal dimension provides a richer identification strategy than
+cross-sectional metalearners.
+
+**Decision rule:**
+
+| Data available | Recommended tool |
+|---|---|
+| Repeated observations per entity (panel / time-series) | [AutoITE geo branch](https://github.com/jpeaceau/AutoITE/tree/geo) |
+| Cross-sectional data only | GeoXGB + metalearner (T/S/X/DR-learner) |
+
 ## License
 
 MIT
