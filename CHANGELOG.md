@@ -4,6 +4,89 @@ All notable changes to GeoXGB are documented here.
 
 ---
 
+## [0.1.3] — 2026-02-24
+
+### New features
+
+- **`tree_splitter` parameter** (`GeoXGBRegressor`, `GeoXGBClassifier`):
+  controls the split strategy for gradient-boosting weak learners.
+  Default changed from the implicit `'best'` (sklearn optimal-split search)
+  to **`'random'`** (ExtraTree-style: random feature and threshold per node).
+
+  Benchmarked at n=1000, 5 seeds, 1000 rounds vs previous `'best'` default:
+
+  | Dataset | splitter=best | splitter=random | Delta | Speedup |
+  |---|---|---|---|---|
+  | friedman1 | 0.9138 R² | 0.9170 R² | **+0.0032** | 2.71× |
+  | friedman2 | 0.9076 R² | 0.9195 R² | **+0.0119** | 2.47× |
+  | classif | 0.9724 AUC | 0.9785 AUC | **+0.0061** | 2.47× |
+  | noisy_clf | 0.9266 AUC | 0.9274 AUC | **+0.0008** | 2.46× |
+  | sparse_highdim† | −0.0994 R² | −0.1378 R² | −0.0384 | 3.28× |
+
+  † sparse_highdim (40 features, noise=20) requires HPO under either splitter;
+  both values are negative, indicating this dataset is out of scope for default
+  parameters regardless of split strategy.
+
+  Random splits are **2.46–3.28× faster** and **improve accuracy on 4/5
+  datasets**. Classification improves because HVRT already
+  curates a geometrically diverse, gradient-signal-aligned sample subset at
+  each refit — optimal split search on that subset is redundant. Random splits
+  instead act as implicit regularisation: they reduce inter-tree correlation,
+  improve ensemble diversity, and are more robust to noisy labels (noisy_clf
+  +0.0039 AUC). Per-prediction interpretability is **fully preserved** —
+  SHAP values, decision paths, and HVRT partition rules are unaffected by
+  the split strategy. The only degraded output is the global aggregate
+  `feature_importances()`, which reflects boosting-level impurity across all
+  trees; users relying on per-partition `partition_feature_importances()` (the
+  geometry layer) are unaffected. Set `tree_splitter='best'` to restore the
+  previous behaviour.
+
+### Bug fixes
+
+- **`auto_expand` now respects `noise_modulation`** (`_resampling.py`): the
+  auto-expand path previously ignored `noise_mod` entirely and generated the
+  maximum number of synthetic samples (`min_train_samples − n_reduced`)
+  unconditionally. On small datasets with converging gradients (e.g. sklearn
+  `diabetes`, n=354), the noise estimator correctly detects that later-round
+  residuals are structureless (`noise_mod → 0.000`) — but auto-expand was
+  flooding the training set with ~93% synthetic samples carrying near-zero
+  gradient values, diluting the real signal and causing monotonic performance
+  degradation from round 20 onward. Fix: apply the same `max(noise_mod, 0.1)`
+  floor already used by the manual `expand_ratio` path. At convergence the
+  synthetic budget is capped at 10% of the gap, limiting contamination.
+
+- **`assignment_strategy` not forwarded in `auto_expand` branch**
+  (`_resampling.py`): the `auto_expand` path called `_knn_assign_y` without
+  the `strategy=assignment_strategy` keyword, silently defaulting to `'knn'`
+  regardless of the user's setting. Fixed to match the manual `expand_ratio`
+  branch.
+
+- **Refit skipped when noise modulation collapses** (`_base.py`): a scheduled
+  HVRT refit is now skipped when `auto_noise=True` and the previous resample's
+  `noise_modulation < 0.05`. Refitting HVRT on near-zero residuals (converged
+  gradients) produces poor partition geometry; auto_expand then fills the
+  training set with near-zero-gradient synthetic samples that dilute the real
+  signal. When a skip is triggered, `preds` is re-synced from the incremental
+  `preds_on_X` tracker and training continues on the frozen Xr/yr from the
+  last meaningful resample. This primarily benefits small datasets where
+  boosting converges in tens of rounds (e.g. `n < 500`).
+
+- **`auto_expand` capped at 5× training set size** (`_resampling.py`): the
+  auto-expand target is now `min(min_train_samples, max(n_orig * 5, 1000))`.
+  Without this cap, `min_train_samples=5000` on a 200-sample dataset produces
+  a 25× synthetic expansion (e.g. 1,824 synthetic from 191 real samples for
+  Heart Disease, n=270), drowning the real signal and causing monotonic
+  performance degradation at high `n_rounds`. The cap is inactive for
+  `n_orig >= 1000` where `5 × n_orig >= min_train_samples`. Heart Disease
+  improvement: n_expanded 1,824 → 337; checkpoint performance at r=1000 with
+  `lr=0.1, max_depth=3, refit_interval=None`: AUC 0.8872 → stable 0.8908.
+
+### Default changes
+
+- **`tree_splitter` default**: `'best'` (implicit) → `'random'`. See above.
+
+---
+
 ## [0.1.2] — 2026-02-24
 
 ### Dependency

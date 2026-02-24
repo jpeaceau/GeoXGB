@@ -3,6 +3,14 @@ from sklearn.tree import DecisionTreeRegressor, export_text
 
 from geoxgb._resampling import hvrt_resample
 
+# When auto_noise=True, skip a scheduled refit if the previous resample's
+# noise_modulation fell below this threshold.  Near-zero noise_mod means
+# gradients are structureless (converged); refitting HVRT on them produces
+# poor geometry and floods the training set with near-zero-gradient synthetic
+# samples that dilute the real signal.  The frozen Xr/yr from the last
+# meaningful resample is kept; only preds is re-synced to stay current.
+_REFIT_NOISE_FLOOR = 0.05
+
 
 class _GeoXGBBase:
     """
@@ -23,7 +31,7 @@ class _GeoXGBBase:
         "auto_noise", "auto_expand", "min_train_samples", "random_state",
         "cache_geometry", "lr_schedule", "tree_criterion", "n_jobs",
         "generation_strategy", "adaptive_bandwidth", "convergence_tol",
-        "feature_weights", "assignment_strategy",
+        "feature_weights", "assignment_strategy", "tree_splitter",
     )
 
     # Subclasses set this to True to enable class-conditional noise estimation
@@ -57,6 +65,7 @@ class _GeoXGBBase:
         convergence_tol=None,
         feature_weights=None,
         assignment_strategy="auto",
+        tree_splitter="random",
     ):
         self.n_rounds = n_rounds
         self.learning_rate = learning_rate
@@ -84,6 +93,7 @@ class _GeoXGBBase:
         self.convergence_tol = convergence_tol
         self.feature_weights = feature_weights
         self.assignment_strategy = assignment_strategy
+        self.tree_splitter = tree_splitter
 
         # Fitted state
         self._trees = []
@@ -188,6 +198,7 @@ class _GeoXGBBase:
 
         res = self._do_resample(X, y)
         Xr, yr = res.X, res.y
+        _last_valid_res = res   # most recent meaningful resample (for skip path)
         self._train_n_resampled = len(Xr)
         self._record_resample(0, res)
 
@@ -234,31 +245,50 @@ class _GeoXGBBase:
                             self.convergence_round_ = i
                             break
 
-                res = self._do_resample(X, grads_orig, hvrt_cache=self._hvrt_cache)
-                Xr = res.X
-                # Fast path: when Xr contains only real samples (no synthetic
-                # expansion), index into the incrementally-maintained preds_on_X
-                # tracker.  Fancy indexing returns a copy so preds_on_X is safe.
-                # This replaces an O(i × |Xr|) loop over all trees with O(|Xr|),
-                # converting the quadratic refit cost to linear.
-                #
-                # When synthetic samples are present (n_expanded > 0), fall back
-                # to _raw_predict on the full Xr: batching real + synthetic in one
-                # contiguous predict call is faster than splitting into two loops.
-                if res.n_expanded == 0:
-                    preds_on_Xr = preds_on_X[res.red_idx]
+                # Skip refit when auto_noise is active and the previous resample
+                # detected near-zero noise_modulation.  Converged gradients look
+                # structureless to the SNR estimator; fitting HVRT on them gives
+                # poor geometry and auto_expand synthesises samples carrying
+                # near-zero gradient signal that dilutes the real training set.
+                # Instead, keep the frozen Xr/yr from the last meaningful resample
+                # and only re-sync preds so gradient computation stays current.
+                _last_noise = self._resample_history[-1]["noise_modulation"]
+                _skip_refit = self.auto_noise and (_last_noise < _REFIT_NOISE_FLOOR)
+
+                if _skip_refit:
+                    if _last_valid_res.n_expanded == 0:
+                        preds = preds_on_X[_last_valid_res.red_idx]
+                    else:
+                        preds = self._raw_predict(Xr)
+                    # Xr, yr, self._train_n_resampled remain from last valid resample
                 else:
-                    preds_on_Xr = self._raw_predict(Xr)
-                # Reconstruct targets: regression uses additive residuals;
-                # classifier recovers class probabilities via sigmoid (UPDATE-005)
-                yr = self._targets_from_gradients(res.y, preds_on_Xr)
-                preds = preds_on_Xr
-                self._train_n_resampled = len(Xr)
-                self._record_resample(i, res)
+                    res = self._do_resample(X, grads_orig, hvrt_cache=self._hvrt_cache)
+                    _last_valid_res = res
+                    Xr = res.X
+                    # Fast path: when Xr contains only real samples (no synthetic
+                    # expansion), index into the incrementally-maintained preds_on_X
+                    # tracker.  Fancy indexing returns a copy so preds_on_X is safe.
+                    # This replaces an O(i × |Xr|) loop over all trees with O(|Xr|),
+                    # converting the quadratic refit cost to linear.
+                    #
+                    # When synthetic samples are present (n_expanded > 0), fall back
+                    # to _raw_predict on the full Xr: batching real + synthetic in one
+                    # contiguous predict call is faster than splitting into two loops.
+                    if res.n_expanded == 0:
+                        preds_on_Xr = preds_on_X[res.red_idx]
+                    else:
+                        preds_on_Xr = self._raw_predict(Xr)
+                    # Reconstruct targets: regression uses additive residuals;
+                    # classifier recovers class probabilities via sigmoid (UPDATE-005)
+                    yr = self._targets_from_gradients(res.y, preds_on_Xr)
+                    preds = preds_on_Xr
+                    self._train_n_resampled = len(Xr)
+                    self._record_resample(i, res)
 
             grads = self._compute_gradients(yr, preds)
             tree = DecisionTreeRegressor(
                 criterion=self.tree_criterion,
+                splitter=self.tree_splitter,
                 max_depth=self.max_depth,
                 min_samples_leaf=self.min_samples_leaf,
                 random_state=self.random_state + i,

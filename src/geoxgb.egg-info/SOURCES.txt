@@ -8,6 +8,7 @@ src/geoxgb/_noise.py
 src/geoxgb/_resampling.py
 src/geoxgb/_utils.py
 src/geoxgb/classifier.py
+src/geoxgb/gardener.py
 src/geoxgb/optimizer.py
 src/geoxgb/regressor.py
 src/geoxgb/report.py
@@ -18,6 +19,7 @@ src/geoxgb.egg-info/requires.txt
 src/geoxgb.egg-info/top_level.txt
 tests/test_categorical.py
 tests/test_classifier.py
+tests/test_convergence.py
 tests/test_interpretability.py
 tests/test_noise.py
 tests/test_regressor.py

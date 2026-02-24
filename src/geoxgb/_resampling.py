@@ -250,9 +250,21 @@ def hvrt_resample(
             X_out, y_out = X_red, y_red
 
     elif auto_expand and n_reduced < min_train_samples:
-        # Auto-expand: bring training set up to min_train_samples (UPDATE-001).
-        # Expands from the full original distribution (HVRT fitted on all of X).
-        n_expand = min_train_samples - n_reduced
+        # Auto-expand: bring training set toward min_train_samples (UPDATE-001).
+        # Scale expansion by max(noise_mod, 0.1) — the same floor applied to
+        # manual expand_ratio.  When noise_mod collapses to 0 at later refits
+        # (converged gradients look structureless to the SNR estimator), this
+        # prevents flooding the training set with near-zero synthetic gradients
+        # that dilute the residual signal.  Floor at 0.1 ensures some expansion
+        # always occurs for genuinely small datasets.
+        #
+        # Cap the expansion target at 5× n_orig so that small datasets (e.g.
+        # n=200) are not swamped with synthetic samples.  Without this cap,
+        # min_train_samples=5000 on a 200-sample dataset produces a 25× synthetic
+        # expansion where the KDE samples dominate the real signal.  The cap is
+        # inactive for n_orig >= 1000 (5×1000=5000 = min_train_samples default).
+        _eff_min = min(min_train_samples, max(n_orig * 5, 1000))
+        n_expand = max(0, int((_eff_min - n_reduced) * max(noise_mod, 0.1)))
         X_syn_hvrt = hvrt_model.expand(
             n=n_expand,
             variance_weighted=variance_weighted,
@@ -260,7 +272,8 @@ def hvrt_resample(
             generation_strategy=generation_strategy,
             adaptive_bandwidth=adaptive_bandwidth,
         )
-        y_syn = _knn_assign_y(X_syn_hvrt, X_red_hvrt, y_red, hvrt_model)
+        y_syn = _knn_assign_y(X_syn_hvrt, X_red_hvrt, y_red, hvrt_model,
+                               strategy=assignment_strategy)
         X_syn = (X_syn_hvrt / fw[np.newaxis, :]) if fw is not None else X_syn_hvrt
         X_out = np.vstack([X_red, X_syn])
         y_out = np.concatenate([y_red, y_syn])
