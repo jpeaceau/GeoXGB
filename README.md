@@ -278,11 +278,12 @@ clf = GeoXGBClassifier(n_jobs=4)   # ~4x speedup for 5-class problems
 
 ## Benchmarks
 
-GeoXGB wins 9 out of 10 head-to-head comparisons against XGBoost across
+GeoXGB wins all 10 out of 10 head-to-head comparisons against XGBoost across
 standard benchmarks (Friedman #1/#2, classification, sparse high-dimensional,
-and noisy classification datasets), with and without Optuna HPO. The only
-XGBoost win is on a sparse 40-feature dataset where 80% of features are
-irrelevant, diluting HVRT's geometry-based partitioning.
+and noisy classification datasets), with and without Optuna HPO. On the hardest
+case — a 40-feature dataset with 80% irrelevant features — Optuna selects
+`y_weight=0.9`, making HVRT y-driven and cutting through feature-space noise
+for a +0.025 R² margin (previously −0.004 without `y_weight` in the search space).
 
 See [`benchmarks/PERFORMANCE_REPORT.md`](benchmarks/PERFORMANCE_REPORT.md)
 for the full results including per-dataset AUC / R² tables, error complementarity

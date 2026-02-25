@@ -99,6 +99,7 @@ class GeoXGBOptimizer:
         "learning_rate":  0.2,
         "max_depth":      4,
         "refit_interval": 20,
+        "y_weight":       0.5,
     }
 
     # Categorical search space: same style as HVRTOptimizer
@@ -107,6 +108,7 @@ class GeoXGBOptimizer:
         "learning_rate":  [0.05, 0.1, 0.15, 0.2, 0.3],
         "max_depth":      [3, 4, 5, 6],
         "refit_interval": [10, 20, 50],
+        "y_weight":       [0.1, 0.3, 0.5, 0.7, 0.9],
     }
 
     # Fixed params injected into every trial when fast=True.
