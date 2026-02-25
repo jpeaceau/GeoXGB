@@ -170,6 +170,27 @@ Trial 0 is always the v0.1.1 defaults — HPO is guaranteed to match or beat
 the baseline. `fast=True` (default) accelerates trials via geometry caching
 and convergence-based early stop, then refits the final model at full quality.
 
+### fast=True CV calibration
+
+`fast=True` trial conditions (`cache_geometry=True`, `auto_expand=False`,
+`convergence_tol=0.01`) differ from the full-quality final refit. On most
+datasets the CV scores are well-calibrated. On **sparse high-dimensional data**
+(many irrelevant features, e.g. 80% zero-coefficient), fast-mode CV scores can
+be optimistic — the CV may rank GeoXGB above XGBoost while the test score does
+not confirm this, because the cached geometry used in trials does not reflect
+the noisier geometry produced at full quality on that data.
+
+Use `fast=False` for honest CV estimates that align with test performance:
+
+```python
+opt = GeoXGBOptimizer(n_trials=25, cv=5, fast=False)
+opt.fit(X_train, y_train)
+```
+
+`fast=False` is slower (~10–20× per trial) but CV and test scores will agree.
+Use it when the dataset has many irrelevant features or when you need to trust
+the CV ranking as a reliable proxy for held-out performance.
+
 ## Heterogeneity Detection
 
 The boost/partition importance ratio is a heterogeneity surface map. When the
