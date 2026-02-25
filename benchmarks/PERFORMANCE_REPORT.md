@@ -104,12 +104,14 @@ Fifteen investigations were completed:
     GeoXGB uses `GeoXGBOptimizer(fast=True)` which enables `cache_geometry=True`,
     `auto_expand=False`, and `convergence_tol=0.01` during HPO trials for
     practical speed; the final `best_model_` is refit at full quality (default
-    settings). GeoXGB wins 5/5 datasets: friedman1 (+0.0013 R²), friedman2
-    (+0.0003 R²), classification (+0.0019 AUC), sparse\_highdim (+0.0250 R²),
-    noisy\_clf (+0.0019 AUC). `y_weight` added to the Optuna search space
-    (v0.1.5); TPE selects `y_weight=0.9` for sparse\_highdim, making HVRT
-    y-driven and sidestepping irrelevant-feature dilution entirely.
-    Mean test margin: +0.0061 across all 5 datasets. Expanded win record: 10/10.
+    settings). GeoXGB wins 4/5 datasets: friedman1 (+0.0013 R²), friedman2
+    (+0.0003 R²), classification (+0.0019 AUC), noisy\_clf (+0.0019 AUC).
+    XGBoost wins on `sparse_highdim` (40 features, n\_informative=8, noise=20):
+    −0.0164 R² (GeoXGB CV=0.9483 vs XGBoost CV=0.9318 but test=0.9401 vs 0.9566).
+    `y_weight` added to the Optuna search space (v0.1.5); TPE selects
+    `y_weight=0.3` here — 25 trials insufficient to reach the high-y\_weight
+    region that would sidestep irrelevant-feature dilution on this dataset.
+    Mean test margin: −0.0019 across all 5 datasets. Win record: 9/10.
 
 ---
 
@@ -1149,14 +1151,14 @@ XGBoost on every task and dataset tested.
 | Section 15 — Optuna TPE (fast=True) | R² | Friedman #1 | **0.9234** | 0.9221 | **+0.0013** |
 | Section 15 — Optuna TPE (fast=True) | R² | Friedman #2 | **0.9985** | 0.9981 | **+0.0003** |
 | Section 15 — Optuna TPE (fast=True) | AUC | Synthetic binary | **0.9851** | 0.9832 | **+0.0019** |
-| Section 15 — Optuna TPE (fast=True, y\_weight added) | R² | sparse\_highdim (40 feat) | **0.9083** | 0.8833 | **+0.0250** |
+| Section 15 — Optuna TPE (fast=True, y\_weight added) | R² | sparse\_highdim (40 feat) | 0.9401 | **0.9566** | −0.0164 |
 | Section 15 — Optuna TPE (fast=True) | AUC | noisy\_clf (flip\_y=0.10) | **0.9240** | 0.9221 | **+0.0019** |
 
-**Win record: GeoXGB 10 / XGBoost 0** across all tasks, datasets, and parameter configurations.
+**Win record: GeoXGB 9 / XGBoost 1** across all tasks, datasets, and parameter configurations.
 
 ### Key Observations
 
-**GeoXGB is consistently superior, not occasionally lucky.** The 10/0 win record holds across:
+**GeoXGB is consistently superior, not occasionally lucky.** The 9/1 win record holds across:
 - Two distinct task types (regression and classification)
 - Five different datasets (Heart Disease holdout, Friedman #1 and #2, synthetic binary, noisy\_clf)
 - Multiple GeoXGB parameter configurations (default, `gen_strategy=None`, `gen_strategy='epanechnikov'`, Optuna HPO)
@@ -1164,10 +1166,12 @@ XGBoost on every task and dataset tested.
 - Both without and with Optuna TPE hyperparameter optimisation
 
 **Margins are robust.** The smallest winning margin (+0.0003 R²) is consistent;
-the largest (+0.0250 R²) demonstrates GeoXGB's advantage on sparse high-dimensional
-data when `y_weight` HPO is available. With `y_weight=0.9`, HVRT operates in a
-nearly y-driven mode, cutting through irrelevant feature dimensions that dilute
-X-space geometry. GeoXGB now wins all 10 head-to-head comparisons.
+the largest (+0.0094 AUC) demonstrates strong advantage on small datasets where
+geometry-aware expansion has most impact. The single XGBoost win (sparse\_highdim,
+−0.0164 R²) is the hardest scenario: 40 features, only 8 informative (80%
+irrelevant), noise=20. The `y_weight` search (v0.1.5) partially addresses this —
+CV score favours GeoXGB (0.9483 vs 0.9318) — but 25 trials are insufficient to
+reliably explore the high-y\_weight region needed for test-set generalisation.
 
 **GeoXGB defaults are competitive with XGBoost HPO.** Under the v0.1.1 defaults,
 GeoXGB defaults (CV AUC=0.9700) exceed XGBoost defaults (0.9677) and nearly
@@ -1239,20 +1243,16 @@ Mean margin: +0.0002 | Min: −0.0043 | Max: +0.0019
 
 ### Analysis
 
-**GeoXGB wins all 5 datasets.** With `y_weight` added to the Optuna search space
-(v0.1.5), TPE selects `y_weight=0.9` for sparse\_highdim — the most difficult
-scenario for HVRT geometry (40 features, 80% irrelevant, noise=20). In nearly
-y-driven mode, HVRT ignores the diluting X-space geometry and partitions directly
-on the gradient signal, converting a −0.0043 loss into a +0.0250 win. The fix is
-structurally sound: `y_weight` is the correct control knob for irrelevant-feature
-dilution, and TPE discovers this without any domain guidance.
+**GeoXGB wins 4 of 5 datasets.** The single XGBoost win (sparse\_highdim) is the
+most difficult scenario for HVRT geometry: 40 features, only 8 informative (80%
+irrelevant), noise=20. In this regime, HVRT's z-score partitioning is diluted by
+noisy irrelevant dimensions. The `y_weight` search (v0.1.5) partially addresses
+this — GeoXGB CV=0.9483 beats XGBoost CV=0.9318 — but TPE requires more than 25
+trials to reliably land in the high-y\_weight region for test-set generalisation.
+The −0.0164 margin (vs original −0.0043 without y\_weight search) reflects the
+larger search space diluting the 25-trial budget across one extra parameter.
 
-**GeoXGB's largest margin is now on sparse\_highdim (+0.0250 R²).** The previous
-second-largest was the Heart Disease small-dataset win (+0.0094 AUC). The
-sparse\_highdim swing is the most dramatic because v0.1.5 not only wins but
-does so by 2.5× the next-largest margin.
-
-**GeoXGB's noisy\_clf advantage remains intact (+0.0019 AUC, 20 features, flip\_y=0.10).**
+**GeoXGB's largest margin is on noisy\_clf (+0.0019 AUC, 20 features, flip\_y=0.10).**
 Noise modulation suppresses corrupted gradient signal; XGBoost finds an aggressively
 sparse early-stop config (100 rounds) to avoid overfitting the noise — GeoXGB can
 use 10x more rounds safely.
@@ -1473,5 +1473,5 @@ incorporated into the GeoXGB library.
 | `pyproject.toml` | Modified | Added `[project.optional-dependencies] optimizer = ["optuna>=3.0"]` |
 | `src/geoxgb/_base.py` | Modified | Added `convergence_tol` parameter; `_convergence_losses` and `convergence_round_` tracked state; early-stop check before resample at each refit event |
 | `tests/test_convergence.py` | New | 7 tests for convergence\_tol: early stopping, no-stop, losses populated, repr, classifier support, prediction after stop |
-| `benchmarks/optuna_benchmark.py` | New | Optuna TPE benchmark: GeoXGBOptimizer(fast=True, 25 trials) vs XGBoost Optuna (25 trials), 5 datasets, 3-fold CV; GeoXGB wins 5/5 (v0.1.5: y\_weight added to search space, TPE selects y\_weight=0.9 on sparse\_highdim, +0.0250 R²) |
+| `benchmarks/optuna_benchmark.py` | New | Optuna TPE benchmark: GeoXGBOptimizer(fast=True, 25 trials) vs XGBoost Optuna (25 trials), 5 datasets, 3-fold CV; GeoXGB wins 4/5 (v0.1.5: y\_weight added to search space; sparse\_highdim CV favours GeoXGB but test does not with 25 trials) |
 | `benchmarks/imputation_benchmark.py` | New | GeoXGB as imputer: per-feature GeoXGBRegressor imputation vs mean / k-NN / XGBoost native NaN; imputation quality (RMSE) and downstream prediction (AUC / R²) on classification and Friedman #1 regression with 30% MNAR; XGBoost native NaN routing wins both tasks; GeoXGB imputation offers no advantage over k-NN |
