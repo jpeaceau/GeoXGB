@@ -8,6 +8,14 @@ All notable changes to GeoXGB are documented here.
 
 ### New features
 
+- **`y_weight` added to `GeoXGBOptimizer` search space** (`optimizer.py`):
+  Optuna TPE now searches `y_weight` over `[0.1, 0.3, 0.5, 0.7, 0.9]`. On
+  sparse high-dimensional data (many irrelevant features), TPE selects high
+  `y_weight` (0.9), making HVRT nearly y-driven and cutting through
+  irrelevant-feature dilution. Effect on `sparse_highdim` (40 features, 80%
+  irrelevant, noise=20): −0.0043 R² loss → **+0.0250 R²** win. Win record
+  now **10/10** against XGBoost.
+
 - **`noise_guard` parameter** (`_base.py`, default `True`): explicit boolean
   to enable or disable the look-ahead refit discard guard. When `False`, the
   guard never fires — useful for HPO studies that need to sweep guard
