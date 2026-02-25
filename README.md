@@ -170,6 +170,52 @@ Trial 0 is always the v0.1.1 defaults — HPO is guaranteed to match or beat
 the baseline. `fast=True` (default) accelerates trials via geometry caching
 and convergence-based early stop, then refits the final model at full quality.
 
+## Heterogeneity Detection
+
+The boost/partition importance ratio is a heterogeneity surface map. When the
+two importance axes diverge it is not a red flag — it is structural information
+about each feature's local role:
+
+| Ratio | Interpretation |
+|---|---|
+| `ratio >> 1` | Prediction driver — feature drives gradient updates within local regions but does not define them |
+| `ratio << 1` | Heterogeneity axis — feature defines *where* different predictive relationships apply; lower predictive contribution within each region |
+| `ratio ~= 1` | Universally informative — both structure-defining and predictive |
+
+This operates at the **individual level**, not just population subgroups. Each
+HVRT partition is a hyperplane-bounded local region in feature space. With
+sufficient partitions these regions can be arbitrarily fine, approaching
+individual-level neighbourhoods. `partition_tree_rules()` exposes the exact
+conditions defining each individual's local region.
+
+```python
+boost = model.feature_importances(feature_names=names)
+part  = model.partition_feature_importances(feature_names=names)
+
+avg_part = {f: np.mean([e["importances"].get(f, 0) for e in part]) for f in names}
+for f in names:
+    ratio = boost[f] / (avg_part[f] + 1e-10)
+    print(f"{f}: ratio={ratio:.2f}")
+# ratio << 1  =>  heterogeneity axis (defines local structure)
+# ratio >> 1  =>  prediction driver (gradient-dominant within regions)
+```
+
+Validated across three synthetic scenarios in
+[`benchmarks/heterogeneity_detection_test.py`](benchmarks/heterogeneity_detection_test.py):
+
+1. **Regime indicator**: the feature that determines *which* local predictive
+   relationship applies consistently has a lower ratio than within-regime
+   predictors, regardless of whether it directly enters the prediction formula.
+
+2. **Interaction moderator**: the ratio ordering (moderator < predictor) holds
+   for sign-flip interactions. XGBoost tree importance conflates structure and
+   prediction roles into a single score; the boost/partition split separates them.
+
+3. **Complementary roles**: among two strong predictors, HVRT allocates one to
+   anchor partition geometry (lower ratio) and the other to gradient-driven
+   prediction (higher ratio). Role assignment is emergent — the divergence
+   reveals local structure, not model error.
+
 ## Interpretability
 
 ```python
