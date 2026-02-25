@@ -4,6 +4,46 @@ All notable changes to GeoXGB are documented here.
 
 ---
 
+## [0.1.5] — 2026-02-25
+
+### New features
+
+- **`noise_guard` parameter** (`_base.py`, default `True`): explicit boolean
+  to enable or disable the look-ahead refit discard guard. When `False`, the
+  guard never fires — useful for HPO studies that need to sweep guard
+  behaviour, or for users who prefer always-fresh geometry at the cost of
+  potential synthetic-sample contamination on small noisy datasets.
+  `refit_noise_floor` continues to control the noise threshold when
+  `noise_guard=True`.
+
+### Bug fixes
+
+- **Look-ahead refit guard scoped to expansion risk** (`_base.py`): the
+  look-ahead discard guard now fires only when `auto_expand=True` **and**
+  `n < min_train_samples`. This is the specific compound condition under
+  which noisy geometry is genuinely dangerous: unreliable HVRT partitions
+  drive KDE synthesis of many samples that dominate training and carry
+  near-zero gradient signal. At large n (`n >= min_train_samples`),
+  `auto_expand` never triggers, so committing slightly noisy geometry
+  produces only a suboptimal FPS selection of **real** samples — far less
+  harmful. More importantly, blocking geometry updates at large n causes
+  stale partitions to accumulate, which is actively harmful for evolving
+  distributions (live time-series, crypto feeds).
+
+  Previously the guard fired unconditionally whenever `noise_mod < 0.05`,
+  regardless of dataset size or whether expansion was active, causing
+  unnecessary geometry freezes on large datasets.
+
+  Effect on Friedman #1 regression (n=10 000, default params):
+  - R² before: 0.9105
+  - R² after:  **0.9410** (+0.031)
+
+  Small-n behaviour (diabetes, n=354 per fold): unchanged — expansion risk
+  is True, guard remains active, look-ahead still fires when noise_mod
+  collapses.
+
+---
+
 ## [0.1.4] — 2026-02-24
 
 ### New features

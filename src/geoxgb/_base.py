@@ -32,7 +32,7 @@ class _GeoXGBBase:
         "cache_geometry", "lr_schedule", "tree_criterion", "n_jobs",
         "generation_strategy", "adaptive_bandwidth", "convergence_tol",
         "feature_weights", "assignment_strategy", "tree_splitter",
-        "refit_noise_floor",
+        "refit_noise_floor", "noise_guard",
     )
 
     # Subclasses set this to True to enable class-conditional noise estimation
@@ -68,6 +68,7 @@ class _GeoXGBBase:
         assignment_strategy="auto",
         tree_splitter="random",
         refit_noise_floor=_REFIT_NOISE_FLOOR,
+        noise_guard=True,
     ):
         self.n_rounds = n_rounds
         self.learning_rate = learning_rate
@@ -97,6 +98,7 @@ class _GeoXGBBase:
         self.assignment_strategy = assignment_strategy
         self.tree_splitter = tree_splitter
         self.refit_noise_floor = refit_noise_floor
+        self.noise_guard = noise_guard
 
         # Fitted state
         self._trees = []
@@ -267,7 +269,8 @@ class _GeoXGBBase:
                 # auto_expand never synthesises samples, so noisy geometry is far
                 # less harmful and stale geometry from repeated skips is worse.
                 _skip_refit = (
-                    self.auto_noise
+                    self.noise_guard
+                    and self.auto_noise
                     and _expansion_risk
                     and (_last_refit_noise < self.refit_noise_floor)
                 )
@@ -291,7 +294,8 @@ class _GeoXGBBase:
                     # is skipped: noisy geometry on real-only FPS is acceptable,
                     # and keeping geometry fresh matters more for evolving data.
                     if (
-                        self.auto_noise
+                        self.noise_guard
+                        and self.auto_noise
                         and _expansion_risk
                         and res.noise_modulation < self.refit_noise_floor
                     ):
