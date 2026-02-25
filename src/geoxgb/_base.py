@@ -199,6 +199,15 @@ class _GeoXGBBase:
         if self._is_classifier:
             self._y_cls_orig = y.astype(int)
 
+        # Look-ahead guard fires only when synthetic expansion is active AND n is
+        # small enough that expanded samples would dominate the training set.  At
+        # large n, auto_expand never triggers (n >= min_train_samples), so noisy
+        # geometry produces a suboptimal FPS selection of REAL samples — far less
+        # harmful than a synthetic-contaminated training set.  Disabling the guard
+        # at large n also prevents stale geometry accumulating when the distribution
+        # is genuinely evolving (e.g. live time-series).
+        _expansion_risk = self.auto_expand and (len(X) < self.min_train_samples)
+
         res = self._do_resample(X, y)
         Xr, yr = res.X, res.y
         _last_valid_res = res   # most recent meaningful resample (for skip path)
@@ -249,12 +258,19 @@ class _GeoXGBBase:
                             self.convergence_round_ = i
                             break
 
-                # Skip refit when auto_noise is active and the PREVIOUS resample
-                # detected near-zero noise_modulation.  _last_refit_noise is updated
-                # on every _do_resample() call — including look-ahead discards —
-                # so once a low-noise refit is detected the skip fires cheaply on
-                # all subsequent intervals without calling _do_resample() again.
-                _skip_refit = self.auto_noise and (_last_refit_noise < self.refit_noise_floor)
+                # Skip refit when auto_noise is active, expansion risk is present,
+                # and the PREVIOUS resample detected near-zero noise_modulation.
+                # _last_refit_noise is updated on every _do_resample() call —
+                # including look-ahead discards — so once a low-noise refit is
+                # detected the skip fires cheaply on all subsequent intervals.
+                # _expansion_risk gates the guard: at large n (n >= min_train_samples)
+                # auto_expand never synthesises samples, so noisy geometry is far
+                # less harmful and stale geometry from repeated skips is worse.
+                _skip_refit = (
+                    self.auto_noise
+                    and _expansion_risk
+                    and (_last_refit_noise < self.refit_noise_floor)
+                )
 
                 if _skip_refit:
                     if _last_valid_res.n_expanded == 0:
@@ -268,13 +284,17 @@ class _GeoXGBBase:
                     # so the next interval's skip-check uses the current signal level.
                     _last_refit_noise = res.noise_modulation
 
-                    # Look-ahead: if the freshly-fitted HVRT reports collapsed SNR,
-                    # discard the new geometry — partitions from near-zero gradients
-                    # are unreliable and would flood the training set with synthetic
-                    # samples carrying no signal.  Re-sync preds on the still-valid
-                    # Xr from _last_valid_res; next refit intervals are then skipped
-                    # cheaply via the _skip_refit path above.
-                    if self.auto_noise and res.noise_modulation < self.refit_noise_floor:
+                    # Look-ahead: if the freshly-fitted HVRT reports collapsed SNR
+                    # AND expansion risk is present, discard the new geometry —
+                    # unreliable partitions would flood the training set with
+                    # synthetic samples carrying no signal.  At large n the guard
+                    # is skipped: noisy geometry on real-only FPS is acceptable,
+                    # and keeping geometry fresh matters more for evolving data.
+                    if (
+                        self.auto_noise
+                        and _expansion_risk
+                        and res.noise_modulation < self.refit_noise_floor
+                    ):
                         if _last_valid_res.n_expanded == 0:
                             preds = preds_on_X[_last_valid_res.red_idx]
                         else:
