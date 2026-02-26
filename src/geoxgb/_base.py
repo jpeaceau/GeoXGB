@@ -1,4 +1,5 @@
 import numpy as np
+from hvrt import HVRT
 from sklearn.tree import DecisionTreeRegressor, export_text
 
 from geoxgb._resampling import hvrt_resample
@@ -26,13 +27,15 @@ class _GeoXGBBase:
 
     _PARAM_NAMES = (
         "n_rounds", "learning_rate", "max_depth", "min_samples_leaf",
-        "n_partitions", "hvrt_min_samples_leaf", "reduce_ratio", "expand_ratio",
+        "n_partitions", "hvrt_min_samples_leaf", "hvrt_max_samples_leaf",
+        "reduce_ratio", "expand_ratio",
         "y_weight", "method", "variance_weighted", "bandwidth", "refit_interval",
         "auto_noise", "auto_expand", "min_train_samples", "random_state",
         "cache_geometry", "lr_schedule", "tree_criterion", "n_jobs",
         "generation_strategy", "adaptive_bandwidth", "convergence_tol",
         "feature_weights", "assignment_strategy", "tree_splitter",
-        "refit_noise_floor", "noise_guard",
+        "refit_noise_floor", "noise_guard", "hvrt_params", "hvrt_tree_splitter",
+        "hvrt_auto_reduce_threshold",
     )
 
     # Subclasses set this to True to enable class-conditional noise estimation
@@ -46,10 +49,11 @@ class _GeoXGBBase:
         min_samples_leaf=5,
         n_partitions=None,
         hvrt_min_samples_leaf=None,
+        hvrt_max_samples_leaf=None,
         reduce_ratio=0.7,
         expand_ratio=0.0,
         y_weight=0.5,
-        method="fps",
+        method="variance_ordered",
         variance_weighted=True,
         bandwidth="auto",
         refit_interval=20,
@@ -69,6 +73,9 @@ class _GeoXGBBase:
         tree_splitter="random",
         refit_noise_floor=_REFIT_NOISE_FLOOR,
         noise_guard=True,
+        hvrt_params=None,
+        hvrt_tree_splitter=None,
+        hvrt_auto_reduce_threshold=None,
     ):
         self.n_rounds = n_rounds
         self.learning_rate = learning_rate
@@ -76,6 +83,7 @@ class _GeoXGBBase:
         self.min_samples_leaf = min_samples_leaf
         self.n_partitions = n_partitions
         self.hvrt_min_samples_leaf = hvrt_min_samples_leaf
+        self.hvrt_max_samples_leaf = hvrt_max_samples_leaf
         self.reduce_ratio = reduce_ratio
         self.expand_ratio = expand_ratio
         self.y_weight = y_weight
@@ -99,6 +107,9 @@ class _GeoXGBBase:
         self.tree_splitter = tree_splitter
         self.refit_noise_floor = refit_noise_floor
         self.noise_guard = noise_guard
+        self.hvrt_params = hvrt_params
+        self.hvrt_tree_splitter = hvrt_tree_splitter
+        self.hvrt_auto_reduce_threshold = hvrt_auto_reduce_threshold
 
         # Fitted state
         self._trees = []
@@ -138,10 +149,13 @@ class _GeoXGBBase:
             y_cls=self._y_cls_orig,
             hvrt_cache=hvrt_cache,
             min_samples_leaf=self.hvrt_min_samples_leaf,
+            max_samples_leaf=self.hvrt_max_samples_leaf,
             generation_strategy=self.generation_strategy,
             adaptive_bandwidth=self.adaptive_bandwidth,
             feature_weights=self.feature_weights,
             assignment_strategy=self.assignment_strategy,
+            hvrt_params=self.hvrt_params,
+            hvrt_tree_splitter=self.hvrt_tree_splitter,
         )
 
     # ------------------------------------------------------------------
@@ -193,6 +207,36 @@ class _GeoXGBBase:
         """
         X = np.asarray(X, dtype=np.float64)
         y = np.asarray(y, dtype=np.float64).ravel()
+
+        # Auto-reduce: when n exceeds the threshold, use HVRT (with its own
+        # auto_tune) to select a representative subset before boosting begins.
+        # HVRT's auto_tune selects n_partitions and min_samples_leaf from the
+        # data — "HVRT's own optimizer" doing the geometry work.
+        if (
+            self.hvrt_auto_reduce_threshold is not None
+            and len(X) > self.hvrt_auto_reduce_threshold
+        ):
+            _ar_kwargs = dict(self.hvrt_params) if self.hvrt_params else {}
+            _ar_kwargs.update(
+                y_weight=self.y_weight,
+                bandwidth=self.bandwidth,
+                random_state=self.random_state,
+                min_samples_leaf=self.hvrt_min_samples_leaf,
+                auto_tune=True,
+            )
+            if self.hvrt_tree_splitter is not None:
+                _ar_kwargs["tree_splitter"] = self.hvrt_tree_splitter
+            _ar_hvrt = HVRT(**_ar_kwargs)
+            _ar_hvrt.fit(X, y)
+            _, _ar_idx = _ar_hvrt.reduce(
+                n=self.hvrt_auto_reduce_threshold,
+                method=self.method,
+                variance_weighted=self.variance_weighted,
+                return_indices=True,
+            )
+            X = X[_ar_idx]
+            y = y[_ar_idx]
+
         self._n_features = X.shape[1]
         self._train_n_original = len(X)
 

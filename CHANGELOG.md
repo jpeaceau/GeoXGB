@@ -4,6 +4,76 @@ All notable changes to GeoXGB are documented here.
 
 ---
 
+## [0.1.6] — 2026-02-27
+
+### Licence
+
+- Relicensed from MIT to **AGPL-3.0-or-later**.
+
+### Dependency
+
+- **Minimum HVRT version bumped to `>=2.6.1`** (was `>=2.5.0`).
+  - HVRT 2.6.0 adds optional Numba-compiled kernels (`pip install hvrt[fast]`
+    or `pip install geoxgb[fast]`). `_centroid_fps_core_nb` is 10–19× faster,
+    the Epanechnikov sampler 5–8×, and `_pairwise_target_nb` 1.1–1.4×. The
+    pure-NumPy fallback is automatic when Numba is absent.
+  - HVRT 2.6.1 adds `tree_splitter` on the `HVRT` constructor (`'best'`
+    default, `'random'` option — 10–50× faster HVRT partition-tree fits, ~8×
+    end-to-end at n=50k). `fastmath=True` is applied to all Numba kernels
+    automatically (+10–20% on top of 2.6.0 gains).
+- `fast = ["hvrt[fast]>=2.6.1"]` optional extra added to `pyproject.toml`.
+
+### New features
+
+- **`hvrt_tree_splitter` parameter** (`GeoXGBRegressor`, `GeoXGBClassifier`,
+  default `None`): forwarded to HVRT's `tree_splitter` constructor argument.
+  `None` keeps HVRT's default (`'best'`). Set to `'random'` for HPO trial
+  speed (10–50× faster per HVRT refit at large n); switch back to `None` or
+  `'best'` for the final model or any regulatory audit path where split
+  determinism matters.
+
+- **`hvrt_auto_reduce_threshold` parameter** (`GeoXGBRegressor`,
+  `GeoXGBClassifier`, default `None`): when `n_train` exceeds the threshold,
+  HVRT is fitted on the full dataset with `auto_tune=True` (its own internal
+  partition optimizer) and the training set is reduced to `threshold` samples
+  before boosting begins. This is the recommended approach for datasets with
+  hundreds of thousands of rows — the external HVRT geometry selects a
+  representative 100k (or whatever threshold is set) and GeoXGB's boosting
+  loop runs at a tractable scale. At 630k samples, a threshold of 100k gives
+  near-identical holdout AUC to training on the full set.
+
+- **`hvrt_max_samples_leaf` parameter** (`GeoXGBRegressor`,
+  `GeoXGBClassifier`, default `None`): caps HVRT partition size by computing
+  `n_partitions = ceil(n / hvrt_max_samples_leaf)` when `n_partitions` is not
+  set explicitly. `min_samples_leaf` still enforces the lower bound.
+
+- **`hvrt_params` dict passthrough** (`GeoXGBRegressor`, `GeoXGBClassifier`,
+  default `None`): arbitrary keyword arguments forwarded to the HVRT
+  constructor. Named GeoXGB parameters (`y_weight`, `bandwidth`,
+  `n_partitions`, `min_samples_leaf`, `hvrt_tree_splitter`, `random_state`)
+  always take precedence over any overlapping keys in `hvrt_params`.
+
+### Default changes
+
+- **`method` default**: `'fps'` → `'variance_ordered'`. `variance_ordered`
+  selects samples with the highest k-NN distance variance within each HVRT
+  partition, prioritising boundary and transition samples. It is fully
+  deterministic (no RNG at any step), wins on 6/12 quality benchmark datasets
+  vs `fps` 4/12, and is auditable: every retained sample has a computable
+  k-NN variance score that can be inspected and reproduced exactly.
+
+### Internal
+
+- `_resampling.py`: `hvrt_params`, `hvrt_max_samples_leaf`, and
+  `hvrt_tree_splitter` forwarded through `hvrt_resample()` to the HVRT
+  constructor. `_kde_stratified_reduce()` rewritten to use centroid distance
+  (O(n·d) per partition) instead of per-partition k-NN, eliminating the
+  O(n²/P) scaling cliff for the `kde_stratified` strategy.
+- `_base.py`: auto-reduce logic at the top of `_fit_boosting` uses HVRT with
+  `auto_tune=True` when `hvrt_auto_reduce_threshold` is set and exceeded.
+
+---
+
 ## [0.1.5] — 2026-02-25
 
 ### New features

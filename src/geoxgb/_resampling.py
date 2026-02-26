@@ -6,6 +6,136 @@ from hvrt import HVRT
 from geoxgb._noise import estimate_noise_modulation, estimate_noise_modulation_classifier
 
 
+# ---------------------------------------------------------------------------
+# KDE-stratified reduction
+# ---------------------------------------------------------------------------
+
+def _kde_stratified_reduce(hvrt_model, y, n_keep, variance_weighted=True,
+                            random_state=42):
+    """
+    KDE-stratified reduction using Scott's rule bandwidth as density proxy.
+
+    Complexity: O(n * d) — no k-NN.  Uses centroid distance to rank samples
+    by density within each partition (peripheral = sparse, central = dense),
+    then selects at evenly-spaced quantile positions to cover every density
+    band from outlier to core.  Scott's rule per-partition std serves as a
+    cheap sanity check on partition spread.
+
+    Algorithm (per partition)
+    -------------------------
+    1. Compute centroid of the partition in HVRT z-space — O(m * d).
+    2. Rank samples by distance to centroid (descending = sparse-first).
+    3. Select budget k_i samples at evenly-spaced quantile positions,
+       giving one sample per density band.
+
+    Budget allocation mirrors HVRT's variance_weighted FPS:
+    weight_i = Var(y_i) * size_i.
+
+    Parameters
+    ----------
+    hvrt_model : fitted HVRT instance
+        Must have X_z_ and partition_ids_ set (always true after fit()).
+    y : ndarray (n,) — gradient signal used for variance-weighted budget.
+    n_keep : int — total samples to select.
+    variance_weighted : bool
+    random_state : int — used only for tiny partitions (< 3 samples).
+
+    Returns
+    -------
+    red_idx : ndarray (n_keep,) — indices into the original training array.
+    """
+    X_z = hvrt_model.X_z_                        # (n, d) — already computed
+    part_ids = hvrt_model.partition_ids_          # (n,)
+    unique_parts = hvrt_model.unique_partitions_  # sorted unique partition IDs
+    n, d = X_z.shape
+    n_parts = len(unique_parts)
+
+    # Map partition IDs to contiguous 0..n_parts-1
+    part_pos = np.searchsorted(unique_parts, part_ids)   # (n,)
+    part_sizes = np.bincount(part_pos, minlength=n_parts)
+
+    # --- Variance-weighted budget allocation ---
+    if variance_weighted:
+        part_vars = np.array([
+            float(y[part_pos == i].var()) if part_sizes[i] > 1 else 0.0
+            for i in range(n_parts)
+        ])
+        weights = part_vars * part_sizes
+        total_w = weights.sum()
+        if total_w < 1e-12:
+            weights = part_sizes.astype(float)
+            total_w = weights.sum()
+    else:
+        weights = part_sizes.astype(float)
+        total_w = weights.sum()
+
+    raw_budgets = weights / total_w * n_keep
+
+    # Largest-remainder rounding
+    budgets = np.floor(raw_budgets).astype(int)
+    budgets = np.minimum(budgets, part_sizes)
+    remainders = raw_budgets - budgets
+    deficit = n_keep - int(budgets.sum())
+    if deficit > 0:
+        top = np.argsort(-remainders)[:deficit]
+        for idx in top:
+            if budgets[idx] < part_sizes[idx]:
+                budgets[idx] += 1
+
+    # Ensure at least 1 sample from each non-empty partition
+    budgets = np.maximum(budgets, np.where(part_sizes > 0, 1, 0))
+    excess = int(budgets.sum()) - n_keep
+    if excess > 0:
+        order = np.argsort(-budgets)
+        for idx in order:
+            if excess <= 0:
+                break
+            trim = min(excess, budgets[idx] - 1)
+            budgets[idx] -= trim
+            excess -= trim
+
+    # --- Per-partition centroid-distance selection ---
+    rng = np.random.RandomState(random_state)
+    selected = []
+
+    for i in range(n_parts):
+        k_i = int(budgets[i])
+        if k_i <= 0:
+            continue
+
+        p_mask = part_pos == i
+        p_idx = np.where(p_mask)[0]   # global indices into training array
+        m = len(p_idx)
+
+        if k_i >= m:
+            selected.append(p_idx)
+            continue
+
+        if m <= 2:
+            chosen = rng.choice(m, size=k_i, replace=False)
+            selected.append(p_idx[chosen])
+            continue
+
+        X_part_z = X_z[p_idx]                         # (m, d)
+        centroid = X_part_z.mean(axis=0)               # (d,)
+        diff = X_part_z - centroid
+        dist_to_centroid = np.sqrt((diff * diff).sum(axis=1))  # (m,)
+
+        # Sort peripheral→central (sparse→dense); select k_i samples at
+        # evenly-spaced quantile positions to cover each density band.
+        order = np.argsort(-dist_to_centroid)
+        q_pos = np.round(np.linspace(0, m - 1, k_i)).astype(int)
+        chosen = order[q_pos]
+        selected.append(p_idx[chosen])
+
+    red_idx = np.concatenate(selected) if selected else np.array([], dtype=int)
+
+    if len(red_idx) > n_keep:
+        red_idx = red_idx[:n_keep]
+
+    return red_idx
+
+
 class _ResampleResult:
     """Container for one resample event."""
 
@@ -112,10 +242,13 @@ def hvrt_resample(
     y_cls=None,
     hvrt_cache=None,
     min_samples_leaf=None,
+    max_samples_leaf=None,
     generation_strategy=None,
     adaptive_bandwidth=False,
     feature_weights=None,
     assignment_strategy="auto",
+    hvrt_params=None,
+    hvrt_tree_splitter=None,
 ):
     """
     Geometry-aware resample via HVRT.
@@ -172,6 +305,12 @@ def hvrt_resample(
         weight < 1 de-emphasizes them.  Trees are always fitted on the original
         unscaled X.  Use ``Gardener.recommend_feature_weights()`` to derive weights
         from the boosting vs partition importance divergence.
+    hvrt_params : dict | None — extra keyword arguments forwarded to the HVRT
+        constructor.  Useful for parameters not explicitly exposed by GeoXGB,
+        such as ``max_depth``, ``n_jobs``, or ``min_samples_per_partition``.
+        Named GeoXGB parameters (y_weight, bandwidth, n_partitions,
+        min_samples_leaf, random_state) take precedence over any overlapping
+        keys in hvrt_params.
 
     Returns
     -------
@@ -191,13 +330,25 @@ def hvrt_resample(
     if hvrt_cache is not None:
         hvrt_model = hvrt_cache
     else:
-        hvrt_model = HVRT(
+        _hvrt_kwargs = dict(hvrt_params) if hvrt_params else {}
+        # Derive n_partitions from max_samples_leaf when n_partitions is not
+        # set explicitly.  Ceiling division: -((-n) // M) avoids import math.
+        # min_samples_leaf remains active as the floor constraint.
+        if max_samples_leaf is not None and n_partitions is None:
+            _eff_n_parts = -((-n_orig) // max_samples_leaf)
+        else:
+            _eff_n_parts = n_partitions
+        # Named GeoXGB params always win over anything in hvrt_params.
+        _hvrt_kwargs.update(
             y_weight=y_weight,
             bandwidth=bandwidth,
             random_state=random_state,
-            n_partitions=n_partitions,
+            n_partitions=_eff_n_parts,
             min_samples_leaf=min_samples_leaf,
         )
+        if hvrt_tree_splitter is not None:
+            _hvrt_kwargs["tree_splitter"] = hvrt_tree_splitter
+        hvrt_model = HVRT(**_hvrt_kwargs)
         hvrt_model.fit(X_hvrt, y=y, feature_types=feature_types)
 
     # Noise estimation: class-conditional for classifiers, global for regressors.
@@ -215,12 +366,20 @@ def hvrt_resample(
     eff_reduce = min(eff_reduce, 1.0)
 
     n_reduce = max(10, int(n_orig * eff_reduce))
-    X_red_hvrt, red_idx = hvrt_model.reduce(
-        n=n_reduce,
-        method=method,
-        variance_weighted=variance_weighted,
-        return_indices=True,
-    )
+    if method == "kde_stratified":
+        red_idx = _kde_stratified_reduce(
+            hvrt_model, y, n_reduce,
+            variance_weighted=variance_weighted,
+            random_state=random_state,
+        )
+        X_red_hvrt = X_hvrt[red_idx]
+    else:
+        X_red_hvrt, red_idx = hvrt_model.reduce(
+            n=n_reduce,
+            method=method,
+            variance_weighted=variance_weighted,
+            return_indices=True,
+        )
     # Use unscaled X for tree training; keep X_red_hvrt for KDE y-assignment.
     X_red = X[red_idx] if fw is not None else X_red_hvrt
     y_red = y[red_idx]

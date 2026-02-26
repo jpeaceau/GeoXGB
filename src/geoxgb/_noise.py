@@ -57,8 +57,9 @@ def estimate_noise_modulation(hvrt_model, y, X):
     nn.fit(X_z)
     _, indices = nn.kneighbors(X_z)
 
-    # Local mean y for each sample, excluding self (column 0 is self)
-    local_means = np.array([y[indices[i, 1:]].mean() for i in range(N)])
+    # Local mean y for each sample, excluding self (column 0 is self).
+    # Vectorized: index y with the full (N, k) neighbour matrix at once.
+    local_means = y[indices[:, 1:]].mean(axis=1)
 
     snr = local_means.var() / y_var
     return float(np.clip((snr - 0.15) / 0.45, 0.0, 1.0))
@@ -111,17 +112,24 @@ def estimate_noise_modulation_classifier(hvrt_model, y_cls, X):
     if global_gini < 1e-10:
         return 1.0
 
-    # Weighted Gini across partitions
+    # Weighted Gini across partitions — fully vectorized (no Python loop).
+    # Uses the same searchsorted + bincount pattern as HVRT's _budgets.py.
     unique_parts = np.unique(partition_ids)
-    weighted_gini = 0.0
-    for pid in unique_parts:
-        mask = partition_ids == pid
-        n_p = float(mask.sum())
-        if n_p < 2:
-            continue
-        part_counts = np.bincount(y_cls[mask], minlength=n_classes).astype(float) / n_p
-        part_gini = 1.0 - float(np.sum(part_counts ** 2))
-        weighted_gini += (n_p / n) * part_gini
+    n_parts = len(unique_parts)
+    pos = np.searchsorted(unique_parts, partition_ids)   # (n,) position index
+    partition_sizes = np.bincount(pos, minlength=n_parts).astype(float)
+
+    # Per-partition class counts: shape (n_parts, n_classes)
+    part_class_counts = np.zeros((n_parts, n_classes), dtype=float)
+    for c in range(n_classes):
+        part_class_counts[:, c] = np.bincount(pos[y_cls == c], minlength=n_parts)
+
+    # Per-partition Gini: (n_parts,) — ignore partitions with < 2 samples
+    valid = partition_sizes >= 2
+    part_probs = part_class_counts[valid] / partition_sizes[valid, np.newaxis]
+    part_gini = 1.0 - np.sum(part_probs ** 2, axis=1)
+    weights = partition_sizes[valid] / n
+    weighted_gini = float(np.dot(weights, part_gini))
 
     # Gini reduction: 1.0 = perfect separation, 0.0 = no improvement over prior
     gini_reduction = (global_gini - weighted_gini) / global_gini
