@@ -4,7 +4,7 @@ All notable changes to GeoXGB are documented here.
 
 ---
 
-## [0.1.6] — 2026-02-27
+## [0.1.7] — 2026-02-27
 
 ### Licence
 
