@@ -1,10 +1,13 @@
 numpy
 scikit-learn
-hvrt>=2.3.0
+hvrt>=2.6.1
 
 [dev]
 pytest
 pytest-cov
+
+[fast]
+hvrt[fast]>=2.6.1
 
 [optimizer]
 optuna>=3.0

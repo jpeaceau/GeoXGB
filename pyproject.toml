@@ -12,12 +12,13 @@ requires-python = ">=3.10"
 dependencies = [
     "numpy",
     "scikit-learn",
-    "hvrt>=2.3.0",
+    "hvrt>=2.6.1",
 ]
 
 [project.optional-dependencies]
 dev = ["pytest", "pytest-cov"]
 optimizer = ["optuna>=3.0"]
+fast = ["hvrt[fast]>=2.6.1"]
 
 [tool.setuptools.packages.find]
 where = ["src"]

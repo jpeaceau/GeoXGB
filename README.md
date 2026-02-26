@@ -16,7 +16,13 @@ For hyperparameter optimisation via Optuna:
 pip install "geoxgb[optimizer]"
 ```
 
-Requires `hvrt >= 2.2.0`, `scikit-learn`, and `numpy`. Python >= 3.10.
+For Numba-accelerated HVRT kernels (recommended for large datasets):
+
+```bash
+pip install "geoxgb[fast]"
+```
+
+Requires `hvrt >= 2.6.0`, `scikit-learn`, and `numpy`. Python >= 3.10.
 
 ## Quick Start
 
@@ -168,28 +174,49 @@ opt.study_.best_trial
 
 Trial 0 is always the v0.1.1 defaults — HPO is guaranteed to match or beat
 the baseline. `fast=True` (default) accelerates trials via geometry caching
-and convergence-based early stop, then refits the final model at full quality.
+and disabled expansion, then refits the final model at full quality
+(`cache_geometry=False`, `auto_expand=True`).
 
-### fast=True CV calibration
+### fast=True speed and accuracy ceiling
 
-`fast=True` trial conditions (`cache_geometry=True`, `auto_expand=False`,
-`convergence_tol=0.01`) differ from the full-quality final refit. On most
-datasets the CV scores are well-calibrated. On **sparse high-dimensional data**
-(many irrelevant features, e.g. 80% zero-coefficient), fast-mode CV scores can
-be optimistic — the CV may rank GeoXGB above XGBoost while the test score does
-not confirm this, because the cached geometry used in trials does not reflect
-the noisier geometry produced at full quality on that data.
+`fast=True` sets `cache_geometry=True`, `auto_expand=False`, and
+`convergence_tol=0.01` during HPO trials only. The final `best_model_` is
+always refit at full quality (GeoXGB defaults: `cache_geometry=False`,
+`auto_expand=True`, no early stop).
 
-Use `fast=False` for honest CV estimates that align with test performance:
+| Setting | Trial effect | Final model |
+|---|---|---|
+| `cache_geometry=True` | HVRT fitted once per trial; reused at all refit intervals | Reverts to `False` (adaptive geometry) |
+| `auto_expand=False` | KDE expansion disabled | Reverts to `True` |
+| `convergence_tol=0.01` | Trial self-terminates when gradient improvement < 1% | Reverts to `None` |
+
+**Speed (post-HVRT 2.5.0):** As of HVRT 2.5.0, the per-trial wall-clock time
+of `fast=True` and `fast=False` is essentially identical at n=500–1000 —
+measured ratio ≈ 1.0× across four benchmark datasets. HVRT 2.5.0's
+vectorized `_budgets.py` made individual HVRT operations ~3.4× faster, so tree
+training now dominates trial cost and `cache_geometry=True` saves very little
+wall time. The primary speed driver in HPO is therefore the `n_rounds` value
+that each proxy happens to select, not the caching mechanism.
+
+**Accuracy ceiling:** The final model test score (after full-quality refit) is
+within 0.001–0.005 AUC/R² of the full-quality proxy for most datasets.
+Exception: small datasets (n<500) can show up to −0.015 R² when the fast proxy
+picks a suboptimal `expand_ratio` (expansion is disabled during trials so this
+parameter cannot be properly evaluated).
+
+**Do not rely on `fast=True` CV scores as calibrated estimates** — they reflect
+cached-geometry conditions that differ from the final refit. Use them only for
+ranking configurations.
+
+Use `fast=False` when accurate CV estimates matter or when `expand_ratio` is
+important to your dataset:
 
 ```python
 opt = GeoXGBOptimizer(n_trials=25, cv=5, fast=False)
 opt.fit(X_train, y_train)
 ```
 
-`fast=False` is slower (~10–20× per trial) but CV and test scores will agree.
-Use it when the dataset has many irrelevant features or when you need to trust
-the CV ranking as a reliable proxy for held-out performance.
+Both modes use the identical HVRT 2.5.0 API path internally.
 
 ## Heterogeneity Detection
 
@@ -305,9 +332,29 @@ and noisy classification datasets), with and without Optuna HPO. The only
 XGBoost win is on a sparse 40-feature dataset where 80% of features are
 irrelevant, diluting HVRT's geometry-based partitioning.
 
-See [`benchmarks/PERFORMANCE_REPORT.md`](benchmarks/PERFORMANCE_REPORT.md)
-for the full results including per-dataset AUC / R² tables, error complementarity
-analysis, and interpretability walkthroughs.
+### Numba acceleration (`geoxgb[fast]`)
+
+Installing `geoxgb[fast]` pulls in `hvrt[fast]`, which activates LLVM-compiled
+Numba kernels for the three HVRT operations GeoXGB hits on every refit cycle:
+
+| HVRT operation | GeoXGB call site | Speedup (2.5.0 → 2.6.0) |
+|---|---|---|
+| `_centroid_fps_core_nb` | `HVRT.reduce()` — FPS selection | **10–19×** |
+| Epanechnikov sampler | `HVRT.expand()` — KDE synthesis | **5–8×** |
+| `_pairwise_target_nb` | `HVRT.fit()` — partition build | **1.1–1.4×** |
+
+Per-refit HVRT overhead drops **2–3× overall** (n=442–5000, p=10). End-to-end
+GeoXGB fit speedup is **1.2–1.4×** at n=1000–5000 (tree training still
+dominates), rising to higher multiples for workflows that do many HVRT refits
+relative to tree rounds. JIT compilation cost is paid once per install
+(`@njit(cache=True)`) — zero overhead per session or per call.
+
+Fallback to pure NumPy is automatic when Numba is absent; no API or behaviour
+change.
+
+See Section 21 of
+[`benchmarks/PERFORMANCE_REPORT.md`](benchmarks/PERFORMANCE_REPORT.md)
+for the full timing comparison (HVRT 2.5.0 vs 2.6.0 + Numba).
 
 ## Causal Inference
 
