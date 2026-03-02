@@ -1,10 +1,10 @@
 [build-system]
-requires = ["setuptools>=68", "wheel"]
-build-backend = "setuptools.build_meta"
+requires = ["scikit-build-core>=0.9", "pybind11>=2.12"]
+build-backend = "scikit_build_core.build"
 
 [project]
 name = "geoxgb"
-version = "0.1.7"
+version = "0.2.0"
 description = "Geometry-aware gradient boosting with HVRT-powered sample curation"
 readme = "README.md"
 license = "AGPL-3.0-or-later"
@@ -12,13 +12,14 @@ requires-python = ">=3.10"
 dependencies = [
     "numpy",
     "scikit-learn",
-    "hvrt>=2.6.1",
 ]
 
 [project.optional-dependencies]
-dev = ["pytest", "pytest-cov"]
+dev       = ["pytest", "pytest-cov"]
 optimizer = ["optuna>=3.0"]
-fast = ["hvrt[fast]>=2.6.1"]
+# hvrt Python package no longer required — bundled as C++ source
 
-[tool.setuptools.packages.find]
-where = ["src"]
+[tool.scikit-build]
+cmake.build-type = "Release"
+wheel.packages   = ["src/geoxgb"]
+# The compiled extension installs into geoxgb/ via CMakeLists install()

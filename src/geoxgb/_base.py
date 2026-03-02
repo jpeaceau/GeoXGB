@@ -124,20 +124,21 @@ class _GeoXGBBase:
         self._y_cls_orig = None   # original integer class labels (classifier only)
         self._hvrt_cache = None   # cached HVRT geometry (reused across refits)
         self._convergence_losses = []   # mean-abs-gradient at each refit (convergence tracking)
-        self.convergence_round_ = None  # round at which early stopping fired (None = ran to completion)
+        self.convergence_round_ = None  # round at which convergence_tol fired (None = ran to completion)
 
     # ------------------------------------------------------------------
     # Resample delegate
     # ------------------------------------------------------------------
 
-    def _do_resample(self, X, y, hvrt_cache=None):
+    def _do_resample(self, X, y, hvrt_cache=None, _overrides=None):
+        _ov = _overrides or {}
         return hvrt_resample(
             X, y,
-            reduce_ratio=self.reduce_ratio,
-            expand_ratio=self.expand_ratio,
-            y_weight=self.y_weight,
-            n_partitions=self.n_partitions,
-            method=self.method,
+            reduce_ratio=_ov.get("reduce_ratio", self.reduce_ratio),
+            expand_ratio=_ov.get("expand_ratio", self.expand_ratio),
+            y_weight=_ov.get("y_weight", self.y_weight),
+            n_partitions=_ov.get("n_partitions", self.n_partitions),
+            method=_ov.get("method", self.method),
             variance_weighted=self.variance_weighted,
             bandwidth=self.bandwidth,
             auto_noise=self.auto_noise,
@@ -302,6 +303,7 @@ class _GeoXGBBase:
                         rel_improvement = (prev - loss_now) / (prev + 1e-12)
                         if rel_improvement < self.convergence_tol:
                             self.convergence_round_ = i
+                            self.convergence_reason_ = "tol"
                             break
 
                 # Skip refit when auto_noise is active, expansion risk is present,

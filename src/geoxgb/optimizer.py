@@ -5,19 +5,26 @@ Optuna TPE hyperparameter search for GeoXGBRegressor / GeoXGBClassifier.
 
 Mirrors the HVRTOptimizer API and design philosophy:
   - Categorical search space (discrete option lists, not continuous ranges)
-  - Warm-start trial 0 = GeoXGB v0.1.1 defaults (guarantees HPO >= baseline)
+  - Warm-start trial 0 = task-specific defaults (guarantees HPO >= baseline)
   - Optional dependency guard: optuna only required inside .fit()
   - Exposes best_params_, best_score_, best_model_, study_ after fitting
 
-Searched parameters
--------------------
-  n_rounds       : [100, 200, 500, 1000, 2000]
-  learning_rate  : [0.05, 0.1, 0.15, 0.2, 0.3]
-  max_depth      : [3, 4, 5, 6]
-  refit_interval : [10, 20, 50]
+Task-specific search spaces
+----------------------------
+Regression (task='regression'):
+  n_rounds, learning_rate, max_depth, refit_interval, y_weight
 
-All other GeoXGB parameters remain at their v0.1.1 defaults unless
-overridden via keyword arguments to .fit().
+Classification (task='classification'):
+  n_rounds, learning_rate, max_depth, refit_interval, y_weight,
+  class_weight, expand_ratio
+
+  ``class_weight`` ('balanced' or None) corrects gradient signal for
+  imbalanced classes; ``expand_ratio`` controls how much extra synthetic
+  data is generated per HVRT resampling step.  Both are irrelevant for
+  regression and excluded from that search space.
+
+All other GeoXGB parameters remain at their defaults unless overridden
+via keyword arguments to .fit().
 
 Install
 -------
@@ -49,10 +56,13 @@ class GeoXGBOptimizer:
     """
     Optuna TPE hyperparameter optimizer for GeoXGBRegressor / GeoXGBClassifier.
 
-    Runs an Optuna study that searches over four core boosting parameters
-    via Tree-structured Parzen Estimator (TPE) sampling.  All other GeoXGB
-    parameters (HVRT geometry, noise settings, etc.) remain at their
-    v0.1.1 defaults unless overridden through ``fit(**fixed_params)``.
+    Runs an Optuna study that searches over core boosting parameters via
+    Tree-structured Parzen Estimator (TPE) sampling.  The search space is
+    task-specific: classification adds ``class_weight`` and ``expand_ratio``
+    which are irrelevant for regression.
+
+    All other GeoXGB parameters (HVRT geometry, noise settings, etc.) remain
+    at their defaults unless overridden through ``fit(**fixed_params)``.
 
     Parameters
     ----------
@@ -72,11 +82,16 @@ class GeoXGBOptimizer:
         Seed for both Optuna's TPE sampler and GeoXGB's random_state.
     verbose : bool, default=False
         If True, show Optuna trial-level progress logs.
+    fast : bool, default=False
+        If True, inject speed-up overrides into every trial:
+        ``cache_geometry=True``, ``auto_expand=False``,
+        ``convergence_tol=0.01``.  Reduces per-trial cost at the expense
+        of slightly noisier scores.
 
     Attributes (set after .fit())
     ------------------------------
     best_params_  : dict  -- best found parameter values
-    best_score_   : float -- best mean CV score (AUC or R^2)
+    best_score_   : float -- best mean CV score (AUC for clf, R^2 for reg)
     best_model_   : GeoXGBRegressor | GeoXGBClassifier
                             refit on full training data with best params
     study_        : optuna.Study -- raw study for diagnostic plots
@@ -93,8 +108,11 @@ class GeoXGBOptimizer:
     >>> opt.study_.trials_dataframe()              # Optuna diagnostics
     """
 
-    # GeoXGB v0.1.1 defaults -- warm-start trial 0 always uses these
-    _DEFAULTS = {
+    # ------------------------------------------------------------------
+    # Regression: warm-start defaults + search space
+    # ------------------------------------------------------------------
+
+    _DEFAULTS_REGRESSION = {
         "n_rounds":       1000,
         "learning_rate":  0.2,
         "max_depth":      4,
@@ -102,8 +120,7 @@ class GeoXGBOptimizer:
         "y_weight":       0.5,
     }
 
-    # Categorical search space: same style as HVRTOptimizer
-    _SEARCH_SPACE = {
+    _SEARCH_SPACE_REGRESSION = {
         "n_rounds":       [100, 200, 500, 1000, 2000],
         "learning_rate":  [0.05, 0.1, 0.15, 0.2, 0.3],
         "max_depth":      [3, 4, 5, 6],
@@ -111,9 +128,35 @@ class GeoXGBOptimizer:
         "y_weight":       [0.1, 0.3, 0.5, 0.7, 0.9],
     }
 
-    # Fixed params injected into every trial when fast=True.
-    # convergence_tol=0.01 lets high-n_rounds trials self-terminate early once
-    # gradient improvement drops below 1% per 2 refit cycles (pure compute saving).
+    # ------------------------------------------------------------------
+    # Classification: warm-start defaults + search space
+    # Adds class_weight and expand_ratio (irrelevant for regression).
+    # ------------------------------------------------------------------
+
+    _DEFAULTS_CLASSIFICATION = {
+        "n_rounds":       1000,
+        "learning_rate":  0.2,
+        "max_depth":      4,
+        "refit_interval": 20,
+        "y_weight":       0.5,
+        "class_weight":   None,
+        "expand_ratio":   0.0,
+    }
+
+    _SEARCH_SPACE_CLASSIFICATION = {
+        "n_rounds":       [100, 200, 500, 1000, 2000],
+        "learning_rate":  [0.05, 0.1, 0.15, 0.2, 0.3],
+        "max_depth":      [3, 4, 5, 6],
+        "refit_interval": [10, 20, 50],
+        "y_weight":       [0.1, 0.3, 0.5, 0.7, 0.9],
+        "class_weight":   [None, "balanced"],
+        "expand_ratio":   [0.0, 0.1, 0.3, 0.5],
+    }
+
+    # ------------------------------------------------------------------
+    # Speed-up overrides applied when fast=True (both tasks)
+    # ------------------------------------------------------------------
+
     _FAST_TRIAL_PARAMS = {
         "cache_geometry":  True,
         "auto_expand":     False,
@@ -152,7 +195,9 @@ class GeoXGBOptimizer:
         y : array-like, shape (n,)
         **fixed_params
             Extra GeoXGB parameters passed verbatim to every trial
-            (not searched).  These override v0.1.1 defaults.
+            (not searched).  These override defaults.
+            Example: ``opt.fit(X, y, n_jobs=4)`` runs each trial with
+            4 OvR parallel workers (classification only).
 
         Returns
         -------
@@ -165,6 +210,14 @@ class GeoXGBOptimizer:
 
         task = self._detect_task(y) if self.task == "auto" else self.task
         self.task_ = task
+
+        # Select task-specific defaults and search space
+        if task == "classification":
+            defaults     = self._DEFAULTS_CLASSIFICATION
+            search_space = self._SEARCH_SPACE_CLASSIFICATION
+        else:
+            defaults     = self._DEFAULTS_REGRESSION
+            search_space = self._SEARCH_SPACE_REGRESSION
 
         from geoxgb import GeoXGBClassifier, GeoXGBRegressor
         model_cls = GeoXGBClassifier if task == "classification" else GeoXGBRegressor
@@ -181,22 +234,23 @@ class GeoXGBOptimizer:
             splits = list(kf.split(X))
 
         # Capture for closure
-        _X, _y = X, y
-        _splits = splits
-        _fixed  = fixed_params
-        _rs     = self.random_state
+        _X, _y       = X, y
+        _splits      = splits
+        _fixed       = fixed_params
+        _rs          = self.random_state
+        _space       = search_space
 
         _fast_params = self._FAST_TRIAL_PARAMS if self.fast else {}
 
         def objective(trial):
             params = {
                 name: trial.suggest_categorical(name, choices)
-                for name, choices in self._SEARCH_SPACE.items()
+                for name, choices in _space.items()
             }
             run_params = {
                 **params,
                 "random_state": _rs,
-                **_fast_params,  # speed-up overrides (cache_geometry, auto_expand)
+                **_fast_params,  # speed-up overrides
                 **_fixed,        # user-supplied overrides last
             }
             fold_scores = []
@@ -214,9 +268,9 @@ class GeoXGBOptimizer:
         sampler = optuna.samplers.TPESampler(seed=self.random_state)
         study   = optuna.create_study(direction="maximize", sampler=sampler)
 
-        # Warm start: trial 0 = GeoXGB v0.1.1 defaults
+        # Warm start: trial 0 = task-specific defaults
         study.enqueue_trial(
-            {name: self._DEFAULTS[name] for name in self._SEARCH_SPACE}
+            {name: defaults[name] for name in search_space}
         )
 
         study.optimize(objective, n_trials=self.n_trials, n_jobs=self.n_jobs)
@@ -267,7 +321,7 @@ class GeoXGBOptimizer:
         proba = model.predict_proba(X)
         if proba.shape[1] == 2:
             return float(roc_auc_score(y, proba[:, 1]))
-        return float(roc_auc_score(y, proba, multi_class="ovr", average="weighted"))
+        return float(roc_auc_score(y, proba, multi_class="ovr", average="macro"))
 
     def _check_fitted(self):
         if not hasattr(self, "best_model_"):
