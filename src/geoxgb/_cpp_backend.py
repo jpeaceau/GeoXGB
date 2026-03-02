@@ -50,6 +50,7 @@ _PYTHON_TO_CPP = {
     "n_bins":                "n_bins",
     "random_state":          "random_state",
     "variance_weighted":     "variance_weighted",
+    "adaptive_y_weight":     "adaptive_y_weight",
     "hvrt_min_samples_leaf": "hvrt_min_samples_leaf",
     "n_partitions":          "hvrt_n_partitions",
 }

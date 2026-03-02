@@ -39,6 +39,7 @@ PYBIND11_MODULE(_geoxgb_cpp, m) {
         .def_readwrite("n_bins",                &GeoXGBConfig::n_bins)
         .def_readwrite("random_state",          &GeoXGBConfig::random_state)
         .def_readwrite("variance_weighted",     &GeoXGBConfig::variance_weighted)
+        .def_readwrite("adaptive_y_weight",     &GeoXGBConfig::adaptive_y_weight)
         .def("__repr__", [](const GeoXGBConfig& c) {
             return "<GeoXGBConfig n_rounds=" + std::to_string(c.n_rounds) +
                    " lr=" + std::to_string(c.learning_rate) +
@@ -67,6 +68,12 @@ PYBIND11_MODULE(_geoxgb_cpp, m) {
         .def("is_fitted",             &GeoXGBRegressor::is_fitted)
         .def("convergence_round",     &GeoXGBRegressor::convergence_round)
         .def("last_noise_modulation", &GeoXGBRegressor::last_noise_modulation)
+        .def("rho_trace",    [](const GeoXGBRegressor& r) {
+            return std::vector<double>(r.rho_trace());
+        }, "Per-refit |ρ(geom, residuals)| trace. Empty if adaptive_y_weight=False.")
+        .def("yw_eff_trace", [](const GeoXGBRegressor& r) {
+            return std::vector<double>(r.yw_eff_trace());
+        }, "Per-refit effective y_weight trace (= y_weight * |ρ|).")
         .def("__repr__", [](const GeoXGBRegressor& r) {
             return std::string("<CppGeoXGBRegressor fitted=") +
                    (r.is_fitted() ? "True" : "False") + ">";
@@ -106,6 +113,12 @@ PYBIND11_MODULE(_geoxgb_cpp, m) {
         .def("is_fitted",             &GeoXGBClassifier::is_fitted)
         .def("convergence_round",     &GeoXGBClassifier::convergence_round)
         .def("last_noise_modulation", &GeoXGBClassifier::last_noise_modulation)
+        .def("rho_trace",    [](const GeoXGBClassifier& c) {
+            return std::vector<double>(c.rho_trace());
+        }, "Per-refit |ρ(geom, residuals)| trace. Empty if adaptive_y_weight=False.")
+        .def("yw_eff_trace", [](const GeoXGBClassifier& c) {
+            return std::vector<double>(c.yw_eff_trace());
+        }, "Per-refit effective y_weight trace (= y_weight * |ρ|).")
         .def("__repr__", [](const GeoXGBClassifier& c) {
             return std::string("<CppGeoXGBClassifier fitted=") +
                    (c.is_fitted() ? "True" : "False") + ">";

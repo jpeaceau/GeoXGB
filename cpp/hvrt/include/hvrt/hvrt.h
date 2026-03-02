@@ -30,7 +30,11 @@ public:
     // with a new blended target and expander_.prepare() for the new partitions.
     // Saves O(n·d·log n) whitening + binning + geometry-target cost per refit.
     // Must call fit() at least once before refit().
-    HVRT& refit(std::optional<Eigen::VectorXd> y = std::nullopt);
+    //
+    // y_weight_override: if >= 0, overrides cfg_.y_weight for this refit only.
+    // Used by GeoXGB's adaptive y_weight scheduler.
+    HVRT& refit(std::optional<Eigen::VectorXd> y = std::nullopt,
+                double y_weight_override = -1.0);
 
     // ── Reduce ────────────────────────────────────────────────────────────────
     // Returns selected rows from original X (un-whitened).
@@ -89,6 +93,10 @@ public:
 
     // _to_z: whiten new data (same as whitener_.transform)
     Eigen::MatrixXd to_z(const Eigen::MatrixXd& X) const;
+
+    // Geometry-only target cached from the last fit() call (before y-blend).
+    // Used by GeoXGB's adaptive y_weight scheduler to compute ρ(geom, residuals).
+    const Eigen::VectorXd& geom_target() const { return geom_target_cache_; }
 
     bool fitted() const { return fitted_; }
 

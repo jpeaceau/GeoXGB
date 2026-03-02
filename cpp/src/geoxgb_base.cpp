@@ -160,7 +160,36 @@ GeoXGBBase::ResampleResult GeoXGBBase::do_resample(
         // X_z_, X_binned_cache_, and geom_target_cache_ are already valid from the
         // previous fit() call.  bin_edges_ will also be reused inside tree_.build().
         h = hvrt_out;
-        h->refit(y_signal);
+
+        // ── Adaptive y_weight ────────────────────────────────────────────────
+        // Compute Pearson ρ between the fixed geometry target (geom_target_cache_,
+        // already zscored ~N(0,1)) and the current residuals (y_signal).
+        // Scale y_weight by |ρ|: when residuals are noise (ρ≈0) → y_weight→0,
+        // letting the partition tree be driven by pure geometry.
+        double yw_eff = static_cast<double>(cfg_.y_weight);
+        if (cfg_.adaptive_y_weight) {
+            const Eigen::VectorXd& geom = h->geom_target();
+            const int n = static_cast<int>(y_signal.size());
+            // Compute Pearson ρ(geom, y_signal) in one pass — no heap allocation.
+            // geom is already ~N(0,1) (output of compute_pairwise_target zscore).
+            // ρ = Σ geom_i*(y_i - ȳ) / (σ_y * (n-1))
+            double y_mean = y_signal.mean();
+            double y_var  = (y_signal.array() - y_mean).square().mean();
+            if (y_var > 1e-20 && n > 1) {
+                double y_std = std::sqrt(y_var);
+                const double* gp = geom.data();
+                const double* yp = y_signal.data();
+                double sum_xy = 0.0;
+                for (int i = 0; i < n; ++i)
+                    sum_xy += gp[i] * (yp[i] - y_mean);
+                double rho = sum_xy / (y_std * (n - 1.0));
+                rho = std::max(-1.0, std::min(1.0, rho));
+                rho_trace_.push_back(std::abs(rho));
+                yw_eff = cfg_.y_weight * std::abs(rho);
+                yw_eff_trace_.push_back(yw_eff);
+            }
+        }
+        h->refit(y_signal, yw_eff);
     } else {
         h = std::make_shared<hvrt::HVRT>(hcfg);
         h->fit(X_full, y_signal);
@@ -343,6 +372,8 @@ void GeoXGBBase::fit_boosting(
     trees_.clear();
     trees_.reserve(cfg_.n_rounds);
     convergence_round_ = -1;
+    rho_trace_.clear();
+    yw_eff_trace_.clear();
 
     // ── Bin full X once for GBT weak learner trees ────────────────────────────
     // GBT trees work on the original feature space (no whitening).

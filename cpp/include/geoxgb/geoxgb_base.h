@@ -35,6 +35,12 @@ public:
     // Noise modulation from last resample (0=noise, 1=clean)
     double last_noise_modulation() const { return last_noise_mod_; }
 
+    // Per-refit trace of |ρ(geom_target, residuals)| and effective y_weight.
+    // Length = number of refits performed.  Empty when adaptive_y_weight=false
+    // or refit_interval=0.  Use for gradient analysis post-fit.
+    const std::vector<double>& rho_trace()    const { return rho_trace_; }
+    const std::vector<double>& yw_eff_trace() const { return yw_eff_trace_; }
+
 protected:
     // Called by subclass fit(); handles the full boosting + resampling loop.
     void fit_boosting(
@@ -55,6 +61,8 @@ protected:
     bool         fitted_            = false;
     int          convergence_round_ = -1;
     double       last_noise_mod_    = 1.0;
+    std::vector<double> rho_trace_;     // |ρ(geom, residuals)| at each refit
+    std::vector<double> yw_eff_trace_;  // effective y_weight used at each refit
 
 private:
     // ── Per-tree state ────────────────────────────────────────────────────────
