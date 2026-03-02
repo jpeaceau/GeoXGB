@@ -98,6 +98,12 @@ public:
     // Used by GeoXGB's adaptive y_weight scheduler to compute ρ(geom, residuals).
     const Eigen::VectorXd& geom_target() const { return geom_target_cache_; }
 
+    // Override the cached geometry target before the next refit().
+    // Used by GeoXGB's Approach 1 (selective target): replaces the static
+    // full-pairwise target with a residual-guided selective version.
+    // The override persists until the next fit() call or another set_geom_target().
+    void set_geom_target(const Eigen::VectorXd& t) { geom_target_cache_ = t; }
+
     bool fitted() const { return fitted_; }
 
     // Returns true if the last refit() produced identical partition assignments.

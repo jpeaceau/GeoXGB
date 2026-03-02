@@ -1,6 +1,7 @@
 #include "hvrt/target.h"
 #include <algorithm>
 #include <cmath>
+#include <vector>
 
 namespace hvrt {
 
@@ -82,6 +83,59 @@ Eigen::VectorXd blend_target(const Eigen::VectorXd& x_comp,
     }
 
     return zscore(blended);
+}
+
+Eigen::VectorXd compute_selective_target(const Eigen::MatrixXd& X_z,
+                                          const Eigen::VectorXd& resid,
+                                          int k_pairs) {
+    const int n     = static_cast<int>(X_z.rows());
+    const int d     = static_cast<int>(X_z.cols());
+    const int n_all = d * (d - 1) / 2;
+
+    // Edge case: no pairs or too few samples → return residual zscore as proxy
+    if (n_all <= 0 || n < 3) return zscore(resid);
+
+    if (k_pairs <= 0) k_pairs = std::max(5, n_all / 4);
+    k_pairs = std::min(k_pairs, n_all);
+
+    // If all pairs are selected, fall through to full pairwise target.
+    if (k_pairs >= n_all) return compute_pairwise_target(X_z);
+
+    // Compute |Pearson(zscore(z_a*z_b), zscore(resid))| for every pair.
+    // Using zscored reference avoids recomputing σ_resid per pair.
+    // Pearson = (1/(n-1)) * zscore(pair).dot(zscore(resid))
+    Eigen::VectorXd resid_z   = zscore(resid);
+    const double    inv_n1    = 1.0 / static_cast<double>(n - 1);
+
+    struct PairScore { int a, b; double score; };
+    std::vector<PairScore> scores;
+    scores.reserve(n_all);
+
+    for (int a = 0; a < d - 1; ++a) {
+        for (int b = a + 1; b < d; ++b) {
+            Eigen::VectorXd prod = (X_z.col(a).array() * X_z.col(b).array()).matrix();
+            // Pearson correlation of zscore(pair product) with zscore(resid)
+            double r = zscore(prod).dot(resid_z) * inv_n1;
+            r = std::max(-1.0, std::min(1.0, r));
+            scores.push_back({a, b, std::abs(r)});
+        }
+    }
+
+    // Partial sort: k_pairs highest |r| pairs move to front
+    std::partial_sort(scores.begin(), scores.begin() + k_pairs, scores.end(),
+                      [](const PairScore& x, const PairScore& y) {
+                          return x.score > y.score;
+                      });
+
+    // Accumulate z-scored products of the top-k pairs
+    Eigen::VectorXd result = Eigen::VectorXd::Zero(n);
+    for (int i = 0; i < k_pairs; ++i) {
+        Eigen::VectorXd prod = (X_z.col(scores[i].a).array() *
+                                X_z.col(scores[i].b).array()).matrix();
+        result += zscore(prod);
+    }
+
+    return zscore(result);
 }
 
 } // namespace hvrt
