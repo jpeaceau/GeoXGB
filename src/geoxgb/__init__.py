@@ -2,14 +2,31 @@ from geoxgb.regressor import GeoXGBRegressor
 from geoxgb.classifier import GeoXGBClassifier
 from geoxgb.gardener import Gardener
 from geoxgb import report
+from geoxgb.explain import (
+    GeoXGBExplainer,
+    Explanation,
+    PathNode,
+    Neighbour,
+    PartitionGeometry,
+    format_explanation,
+    print_explanation,
+    format_summary,
+    print_summary,
+)
 
 try:
     from geoxgb.optimizer import GeoXGBOptimizer
     __all__ = ["GeoXGBRegressor", "GeoXGBClassifier", "GeoXGBOptimizer",
-               "Gardener", "load_model", "report"]
+               "Gardener", "load_model", "report",
+               "GeoXGBExplainer", "Explanation", "PathNode", "Neighbour",
+               "PartitionGeometry", "format_explanation", "print_explanation",
+               "format_summary", "print_summary"]
 except ImportError:
     __all__ = ["GeoXGBRegressor", "GeoXGBClassifier", "Gardener",
-               "load_model", "report"]
+               "load_model", "report",
+               "GeoXGBExplainer", "Explanation", "PathNode", "Neighbour",
+               "PartitionGeometry", "format_explanation", "print_explanation",
+               "format_summary", "print_summary"]
 
 
 def load_model(path):

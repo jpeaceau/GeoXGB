@@ -1,0 +1,121 @@
+model,dataset,n_samples,n_features,fold,val_rmse,val_mae,val_r2,train_time_s,convergence_round,convergence_reason,n_refit_history,status
+GeoXGB_old,friedman1,1000,10,0,0.29072820249825015,0.22925206563978265,0.91277678754793,7.975821500062011,,,0,ok
+GeoXGB_old,friedman1,1000,10,1,0.3766020433038366,0.3036824649855349,0.8583190130661705,8.432801899965852,,,0,ok
+GeoXGB_old,friedman1,1000,10,2,0.308330155909635,0.23890815733728055,0.8970338617963234,11.565165900043212,,,0,ok
+GeoXGB_old,friedman1,1000,10,3,0.38440646078456797,0.3093236093093507,0.8349484266105697,11.5344757999992,,,0,ok
+GeoXGB_old,friedman1,1000,10,4,0.37994613036147334,0.2984056530636447,0.876235273196208,10.568130400031805,,,0,ok
+GeoXGB_old,friedman2,1000,4,0,0.06119872580574514,0.045689186494017396,0.9966565723993734,10.353244199999608,,,0,ok
+GeoXGB_old,friedman2,1000,4,1,0.09976903851698625,0.07037153765216622,0.9894932503438744,12.995524400030263,,,0,ok
+GeoXGB_old,friedman2,1000,4,2,0.06374377518892321,0.04597354739684958,0.9958433474825481,9.267053000046872,,,0,ok
+GeoXGB_old,friedman2,1000,4,3,0.062225219129625295,0.047630862353131714,0.9961582603292439,7.001050499966368,,,0,ok
+GeoXGB_old,friedman2,1000,4,4,0.07051193654075337,0.051493639475328944,0.9947085966367967,8.612844799994491,,,0,ok
+GeoXGB_old,sparse_noisy,1000,40,0,0.27201219992109693,0.20736665348060185,0.9338205901919197,10.787978500011377,,,0,ok
+GeoXGB_old,sparse_noisy,1000,40,1,0.26621598123834267,0.20841127940969031,0.9266482557190636,13.31819500005804,,,0,ok
+GeoXGB_old,sparse_noisy,1000,40,2,0.2866045051899311,0.22165460325140568,0.9145702379712288,12.213101399946027,,,0,ok
+GeoXGB_old,sparse_noisy,1000,40,3,0.2604229256340711,0.2050564038745473,0.9301799097877936,11.951062500011176,,,0,ok
+GeoXGB_old,sparse_noisy,1000,40,4,0.2511503977143686,0.19122574377121848,0.9348757432329873,13.434687400003895,,,0,ok
+GeoXGB_old,dense_clean,1000,20,0,0.247761724232527,0.191751071475639,0.9398334122287209,10.698121899971738,,,0,ok
+GeoXGB_old,dense_clean,1000,20,1,0.22223945174363155,0.1700247359882442,0.9502267390942619,9.986019000061788,,,0,ok
+GeoXGB_old,dense_clean,1000,20,2,0.26625689574090916,0.18821757432291158,0.9336060212333258,10.850492600002326,,,0,ok
+GeoXGB_old,dense_clean,1000,20,3,0.2826098614683054,0.21819151966337597,0.9178768041883589,12.84564919990953,,,0,ok
+GeoXGB_old,dense_clean,1000,20,4,0.2255611828704401,0.1806786336055876,0.9455495082023102,10.406972900032997,,,0,ok
+GeoXGB_new,friedman1,1000,10,0,0.2688912464630762,0.2090891273442619,0.925387587914763,16.459399900049902,,,0,ok
+GeoXGB_new,friedman1,1000,10,1,0.27946629832704883,0.21999391605478663,0.9219801493810754,17.66596719995141,,,0,ok
+GeoXGB_new,friedman1,1000,10,2,0.31582373686028437,0.23718489765762063,0.891968114675379,10.210066700004973,,,0,ok
+GeoXGB_new,friedman1,1000,10,3,0.28143016148422745,0.22013066369765963,0.9115333479989735,18.54923820006661,,,0,ok
+GeoXGB_new,friedman1,1000,10,4,0.30748850130050487,0.2498911695150846,0.9189392541213977,16.11627579992637,,,0,ok
+GeoXGB_new,friedman2,1000,4,0,0.045622525431274236,0.03580134817302534,0.9981419140163332,18.794577499968,,,0,ok
+GeoXGB_new,friedman2,1000,4,1,0.04544791252175005,0.03619350023058999,0.9978197580515406,14.970912700053304,,,0,ok
+GeoXGB_new,friedman2,1000,4,2,0.05055945776474217,0.03943061159969889,0.997384992286912,9.825784500106238,,,0,ok
+GeoXGB_new,friedman2,1000,4,3,0.04621447535939333,0.036145105951111256,0.99788090163096,16.644208200043067,,,0,ok
+GeoXGB_new,friedman2,1000,4,4,0.04529712040301104,0.0351860219812131,0.9978163311806173,16.83741439995356,,,0,ok
+GeoXGB_new,sparse_noisy,1000,40,0,0.1787003462335505,0.1402096277046154,0.9714374543202569,15.144111800007522,,,0,ok
+GeoXGB_new,sparse_noisy,1000,40,1,0.18346031052194203,0.1470556271799554,0.9651641471007383,22.18138690001797,,,0,ok
+GeoXGB_new,sparse_noisy,1000,40,2,0.1794881740603643,0.1366650570429091,0.9664945967003519,21.286000700085424,,,0,ok
+GeoXGB_new,sparse_noisy,1000,40,3,0.17124785089562358,0.12707166941905446,0.9698093656390474,18.455032299971208,,,0,ok
+GeoXGB_new,sparse_noisy,1000,40,4,0.14955126963137108,0.1136828478152188,0.976908335009297,18.62357180006802,,,0,ok
+GeoXGB_new,dense_clean,1000,20,0,0.12264003009289372,0.09192687128316387,0.9852581682777479,19.891061899950728,,,0,ok
+GeoXGB_new,dense_clean,1000,20,1,0.12112452467444529,0.0947083745957869,0.9852151149570012,20.23410690005403,,,0,ok
+GeoXGB_new,dense_clean,1000,20,2,0.13335548486673737,0.09560568216966443,0.9833448429523786,19.92142059991602,,,0,ok
+GeoXGB_new,dense_clean,1000,20,3,0.11151274355244374,0.08468237283579079,0.9872138375174625,18.234730000025593,,,0,ok
+GeoXGB_new,dense_clean,1000,20,4,0.11462614428289582,0.08875854594762518,0.9859382151717117,19.282356100040488,,,0,ok
+GeoXGB_new_3k,friedman1,1000,10,0,nan,nan,nan,4.499999340623617e-05,,,,"TypeError(""_GeoXGBBase.__init__() got an unexpected keyword argument 'cone_guard'. Did you mean 'noise_guard'?"")"
+GeoXGB_new_3k,friedman1,1000,10,1,nan,nan,nan,3.530003596097231e-05,,,,"TypeError(""_GeoXGBBase.__init__() got an unexpected keyword argument 'cone_guard'. Did you mean 'noise_guard'?"")"
+GeoXGB_new_3k,friedman1,1000,10,2,nan,nan,nan,3.5199918784201145e-05,,,,"TypeError(""_GeoXGBBase.__init__() got an unexpected keyword argument 'cone_guard'. Did you mean 'noise_guard'?"")"
+GeoXGB_new_3k,friedman1,1000,10,3,nan,nan,nan,3.50000336766243e-05,,,,"TypeError(""_GeoXGBBase.__init__() got an unexpected keyword argument 'cone_guard'. Did you mean 'noise_guard'?"")"
+GeoXGB_new_3k,friedman1,1000,10,4,nan,nan,nan,3.7499936297535896e-05,,,,"TypeError(""_GeoXGBBase.__init__() got an unexpected keyword argument 'cone_guard'. Did you mean 'noise_guard'?"")"
+GeoXGB_new_3k,friedman2,1000,4,0,nan,nan,nan,3.1400006264448166e-05,,,,"TypeError(""_GeoXGBBase.__init__() got an unexpected keyword argument 'cone_guard'. Did you mean 'noise_guard'?"")"
+GeoXGB_new_3k,friedman2,1000,4,1,nan,nan,nan,2.95999925583601e-05,,,,"TypeError(""_GeoXGBBase.__init__() got an unexpected keyword argument 'cone_guard'. Did you mean 'noise_guard'?"")"
+GeoXGB_new_3k,friedman2,1000,4,2,nan,nan,nan,2.859998494386673e-05,,,,"TypeError(""_GeoXGBBase.__init__() got an unexpected keyword argument 'cone_guard'. Did you mean 'noise_guard'?"")"
+GeoXGB_new_3k,friedman2,1000,4,3,nan,nan,nan,3.370002377778292e-05,,,,"TypeError(""_GeoXGBBase.__init__() got an unexpected keyword argument 'cone_guard'. Did you mean 'noise_guard'?"")"
+GeoXGB_new_3k,friedman2,1000,4,4,nan,nan,nan,3.529991954565048e-05,,,,"TypeError(""_GeoXGBBase.__init__() got an unexpected keyword argument 'cone_guard'. Did you mean 'noise_guard'?"")"
+GeoXGB_new_3k,sparse_noisy,1000,40,0,nan,nan,nan,3.3400021493434906e-05,,,,"TypeError(""_GeoXGBBase.__init__() got an unexpected keyword argument 'cone_guard'. Did you mean 'noise_guard'?"")"
+GeoXGB_new_3k,sparse_noisy,1000,40,1,nan,nan,nan,3.2400013878941536e-05,,,,"TypeError(""_GeoXGBBase.__init__() got an unexpected keyword argument 'cone_guard'. Did you mean 'noise_guard'?"")"
+GeoXGB_new_3k,sparse_noisy,1000,40,2,nan,nan,nan,3.100000321865082e-05,,,,"TypeError(""_GeoXGBBase.__init__() got an unexpected keyword argument 'cone_guard'. Did you mean 'noise_guard'?"")"
+GeoXGB_new_3k,sparse_noisy,1000,40,3,nan,nan,nan,2.9699993319809437e-05,,,,"TypeError(""_GeoXGBBase.__init__() got an unexpected keyword argument 'cone_guard'. Did you mean 'noise_guard'?"")"
+GeoXGB_new_3k,sparse_noisy,1000,40,4,nan,nan,nan,2.789997961372137e-05,,,,"TypeError(""_GeoXGBBase.__init__() got an unexpected keyword argument 'cone_guard'. Did you mean 'noise_guard'?"")"
+GeoXGB_new_3k,dense_clean,1000,20,0,nan,nan,nan,3.4199911169707775e-05,,,,"TypeError(""_GeoXGBBase.__init__() got an unexpected keyword argument 'cone_guard'. Did you mean 'noise_guard'?"")"
+GeoXGB_new_3k,dense_clean,1000,20,1,nan,nan,nan,3.20998951792717e-05,,,,"TypeError(""_GeoXGBBase.__init__() got an unexpected keyword argument 'cone_guard'. Did you mean 'noise_guard'?"")"
+GeoXGB_new_3k,dense_clean,1000,20,2,nan,nan,nan,2.9699993319809437e-05,,,,"TypeError(""_GeoXGBBase.__init__() got an unexpected keyword argument 'cone_guard'. Did you mean 'noise_guard'?"")"
+GeoXGB_new_3k,dense_clean,1000,20,3,nan,nan,nan,3.709993325173855e-05,,,,"TypeError(""_GeoXGBBase.__init__() got an unexpected keyword argument 'cone_guard'. Did you mean 'noise_guard'?"")"
+GeoXGB_new_3k,dense_clean,1000,20,4,nan,nan,nan,2.8999987989664078e-05,,,,"TypeError(""_GeoXGBBase.__init__() got an unexpected keyword argument 'cone_guard'. Did you mean 'noise_guard'?"")"
+GeoXGB_cone_3k,friedman1,1000,10,0,nan,nan,nan,3.0800001695752144e-05,,,,"TypeError(""_GeoXGBBase.__init__() got an unexpected keyword argument 'cone_guard'. Did you mean 'noise_guard'?"")"
+GeoXGB_cone_3k,friedman1,1000,10,1,nan,nan,nan,3.260001540184021e-05,,,,"TypeError(""_GeoXGBBase.__init__() got an unexpected keyword argument 'cone_guard'. Did you mean 'noise_guard'?"")"
+GeoXGB_cone_3k,friedman1,1000,10,2,nan,nan,nan,3.0199997127056122e-05,,,,"TypeError(""_GeoXGBBase.__init__() got an unexpected keyword argument 'cone_guard'. Did you mean 'noise_guard'?"")"
+GeoXGB_cone_3k,friedman1,1000,10,3,nan,nan,nan,3.270001616328955e-05,,,,"TypeError(""_GeoXGBBase.__init__() got an unexpected keyword argument 'cone_guard'. Did you mean 'noise_guard'?"")"
+GeoXGB_cone_3k,friedman1,1000,10,4,nan,nan,nan,3.270001616328955e-05,,,,"TypeError(""_GeoXGBBase.__init__() got an unexpected keyword argument 'cone_guard'. Did you mean 'noise_guard'?"")"
+GeoXGB_cone_3k,friedman2,1000,4,0,nan,nan,nan,3.1100003980100155e-05,,,,"TypeError(""_GeoXGBBase.__init__() got an unexpected keyword argument 'cone_guard'. Did you mean 'noise_guard'?"")"
+GeoXGB_cone_3k,friedman2,1000,4,1,nan,nan,nan,2.9999995604157448e-05,,,,"TypeError(""_GeoXGBBase.__init__() got an unexpected keyword argument 'cone_guard'. Did you mean 'noise_guard'?"")"
+GeoXGB_cone_3k,friedman2,1000,4,2,nan,nan,nan,3.93999507650733e-05,,,,"TypeError(""_GeoXGBBase.__init__() got an unexpected keyword argument 'cone_guard'. Did you mean 'noise_guard'?"")"
+GeoXGB_cone_3k,friedman2,1000,4,3,nan,nan,nan,3.469991497695446e-05,,,,"TypeError(""_GeoXGBBase.__init__() got an unexpected keyword argument 'cone_guard'. Did you mean 'noise_guard'?"")"
+GeoXGB_cone_3k,friedman2,1000,4,4,nan,nan,nan,6.19000056758523e-05,,,,"TypeError(""_GeoXGBBase.__init__() got an unexpected keyword argument 'cone_guard'. Did you mean 'noise_guard'?"")"
+GeoXGB_cone_3k,sparse_noisy,1000,40,0,nan,nan,nan,3.2800016924738884e-05,,,,"TypeError(""_GeoXGBBase.__init__() got an unexpected keyword argument 'cone_guard'. Did you mean 'noise_guard'?"")"
+GeoXGB_cone_3k,sparse_noisy,1000,40,1,nan,nan,nan,3.100000321865082e-05,,,,"TypeError(""_GeoXGBBase.__init__() got an unexpected keyword argument 'cone_guard'. Did you mean 'noise_guard'?"")"
+GeoXGB_cone_3k,sparse_noisy,1000,40,2,nan,nan,nan,3.3400021493434906e-05,,,,"TypeError(""_GeoXGBBase.__init__() got an unexpected keyword argument 'cone_guard'. Did you mean 'noise_guard'?"")"
+GeoXGB_cone_3k,sparse_noisy,1000,40,3,nan,nan,nan,0.0004536999622359872,,,,"TypeError(""_GeoXGBBase.__init__() got an unexpected keyword argument 'cone_guard'. Did you mean 'noise_guard'?"")"
+GeoXGB_cone_3k,sparse_noisy,1000,40,4,nan,nan,nan,3.309990279376507e-05,,,,"TypeError(""_GeoXGBBase.__init__() got an unexpected keyword argument 'cone_guard'. Did you mean 'noise_guard'?"")"
+GeoXGB_cone_3k,dense_clean,1000,20,0,nan,nan,nan,3.20998951792717e-05,,,,"TypeError(""_GeoXGBBase.__init__() got an unexpected keyword argument 'cone_guard'. Did you mean 'noise_guard'?"")"
+GeoXGB_cone_3k,dense_clean,1000,20,1,nan,nan,nan,3.77000542357564e-05,,,,"TypeError(""_GeoXGBBase.__init__() got an unexpected keyword argument 'cone_guard'. Did you mean 'noise_guard'?"")"
+GeoXGB_cone_3k,dense_clean,1000,20,2,nan,nan,nan,3.220001235604286e-05,,,,"TypeError(""_GeoXGBBase.__init__() got an unexpected keyword argument 'cone_guard'. Did you mean 'noise_guard'?"")"
+GeoXGB_cone_3k,dense_clean,1000,20,3,nan,nan,nan,3.1100003980100155e-05,,,,"TypeError(""_GeoXGBBase.__init__() got an unexpected keyword argument 'cone_guard'. Did you mean 'noise_guard'?"")"
+GeoXGB_cone_3k,dense_clean,1000,20,4,nan,nan,nan,2.859998494386673e-05,,,,"TypeError(""_GeoXGBBase.__init__() got an unexpected keyword argument 'cone_guard'. Did you mean 'noise_guard'?"")"
+XGBoost_default,friedman1,1000,10,0,0.3302589772681122,0.26574300050865685,0.8874444240005515,1.5740764000220224,,,0,ok
+XGBoost_default,friedman1,1000,10,1,0.35843786687422624,0.29092778047931117,0.8716564648199463,0.37080409994814545,,,0,ok
+XGBoost_default,friedman1,1000,10,2,0.3841787854076477,0.30803990657902147,0.8401439130245547,1.3908203999744728,,,0,ok
+XGBoost_default,friedman1,1000,10,3,0.35170874980081385,0.2707917476075002,0.8618328950869822,0.6928380999015644,,,0,ok
+XGBoost_default,friedman1,1000,10,4,0.4146574379013728,0.32574663605050835,0.8525883674411193,0.48247349995654076,,,0,ok
+XGBoost_default,friedman2,1000,4,0,0.06506725562524797,0.04345059982360098,0.9962205192063638,0.2776249999878928,,,0,ok
+XGBoost_default,friedman2,1000,4,1,0.062175561909416525,0.042487371549472915,0.9959194730697223,0.15069309994578362,,,0,ok
+XGBoost_default,friedman2,1000,4,2,0.05073832020197747,0.037740438139969225,0.9973664575160172,0.13298720004968345,,,0,ok
+XGBoost_default,friedman2,1000,4,3,0.055117876507985254,0.039915854160369114,0.9969857448071556,0.2955737999873236,,,0,ok
+XGBoost_default,friedman2,1000,4,4,0.05632644954042569,0.04203802604162998,0.9966234721335474,0.1343673000810668,,,0,ok
+XGBoost_default,sparse_noisy,1000,40,0,0.38155209484865854,0.30123341750587684,0.8697871607372456,1.2547874000156298,,,0,ok
+XGBoost_default,sparse_noisy,1000,40,1,0.37861237116081653,0.2932027497938827,0.8516348840393033,1.7225389999803156,,,0,ok
+XGBoost_default,sparse_noisy,1000,40,2,0.39151174963214475,0.2988281319848564,0.8405836830688668,1.3184251999482512,,,0,ok
+XGBoost_default,sparse_noisy,1000,40,3,0.34629517326967446,0.2694241679827605,0.8765432456789218,3.126264400081709,,,0,ok
+XGBoost_default,sparse_noisy,1000,40,4,0.3775739742603803,0.2849118757666431,0.8528097164446202,1.3486014000372961,,,0,ok
+XGBoost_default,dense_clean,1000,20,0,0.3756416221985845,0.29772303033126446,0.861696118951582,0.6565573000116274,,,0,ok
+XGBoost_default,dense_clean,1000,20,1,0.38302196779615766,0.3019963506651688,0.8521568705409547,1.4158418999286368,,,0,ok
+XGBoost_default,dense_clean,1000,20,2,0.416347406325269,0.31197866401188645,0.8376550836760708,1.209151600021869,,,0,ok
+XGBoost_default,dense_clean,1000,20,3,0.3930817348982235,0.3044799174315794,0.8411244944377723,0.7169460000004619,,,0,ok
+XGBoost_default,dense_clean,1000,20,4,0.3879862763939955,0.3016557001343079,0.8388961910901347,1.9090862000593916,,,0,ok
+XGBoost_matched,friedman1,1000,10,0,0.29353392159873465,0.23481494827211577,0.9110851408184353,5.019786400021985,,,0,ok
+XGBoost_matched,friedman1,1000,10,1,0.30442271696102347,0.2431436716854543,0.9074235879840205,3.001341799972579,,,0,ok
+XGBoost_matched,friedman1,1000,10,2,0.33362693464149407,0.2707465008698691,0.8794451658364247,3.769434400019236,,,0,ok
+XGBoost_matched,friedman1,1000,10,3,0.3170616151591693,0.25155237262199265,0.8877139906242042,3.787673700018786,,,0,ok
+XGBoost_matched,friedman1,1000,10,4,0.3724177913875007,0.30163320478733197,0.881091287566276,2.9838275000220165,,,0,ok
+XGBoost_matched,friedman2,1000,4,0,0.16088857340166232,0.09933548016485867,0.9768922550708212,1.9491524000186473,,,0,ok
+XGBoost_matched,friedman2,1000,4,1,0.1372133287167823,0.09181989051738379,0.9801267264258211,1.9792682999977842,,,0,ok
+XGBoost_matched,friedman2,1000,4,2,0.17482359699231584,0.11390407677281768,0.9687342923913278,1.1636348000029102,,,0,ok
+XGBoost_matched,friedman2,1000,4,3,0.12921849152968634,0.09194900219888492,0.9834329799956195,1.997336099972017,,,0,ok
+XGBoost_matched,friedman2,1000,4,4,0.126650580243564,0.08989572735328304,0.9829289610965591,2.2859447000082582,,,0,ok
+XGBoost_matched,sparse_noisy,1000,40,0,0.33714776640556937,0.24988783210145407,0.8983314340690614,7.105324000003748,,,0,ok
+XGBoost_matched,sparse_noisy,1000,40,1,0.2979442672492654,0.22354199813407605,0.9081218447733986,6.580012599937618,,,0,ok
+XGBoost_matched,sparse_noisy,1000,40,2,0.31042700715391974,0.23868474772474038,0.8997782073625131,7.586758799967356,,,0,ok
+XGBoost_matched,sparse_noisy,1000,40,3,0.3041801018449688,0.2274163841009496,0.9047459213834015,6.5199452000670135,,,0,ok
+XGBoost_matched,sparse_noisy,1000,40,4,0.317975404485339,0.24271666169030717,0.8956092311176082,5.847833700012416,,,0,ok
+XGBoost_matched,dense_clean,1000,20,0,0.2905067687885225,0.22829508563263182,0.9172821068345453,4.394127600011416,,,0,ok
+XGBoost_matched,dense_clean,1000,20,1,0.29184404377730944,0.22177617280353742,0.9141667713344137,3.995978799997829,,,0,ok
+XGBoost_matched,dense_clean,1000,20,2,0.35095421152554207,0.24242820893576272,0.8846472683549509,3.499109199969098,,,0,ok
+XGBoost_matched,dense_clean,1000,20,3,0.2909384405633101,0.22082604998997277,0.9129651008264038,3.8243351000128314,,,0,ok
+XGBoost_matched,dense_clean,1000,20,4,0.3070382191481479,0.2293446901530698,0.8991077152978142,4.456472299993038,,,0,ok
