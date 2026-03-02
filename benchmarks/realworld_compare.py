@@ -36,13 +36,13 @@ N_SPLITS = 5
 
 GEO_REG_PARAMS = dict(
     n_rounds=500, learning_rate=0.1, max_depth=3,
-    min_samples_leaf=5, reduce_ratio=0.7, y_weight=0.5,
+    min_samples_leaf=5, reduce_ratio=0.7, y_weight=0.2,
     refit_interval=5, auto_expand=True, expand_ratio=0.1,
     min_train_samples=100, n_bins=64, random_state=RNG,
 )
 GEO_CLF_PARAMS = dict(
     n_rounds=500, learning_rate=0.1, max_depth=5,
-    min_samples_leaf=5, reduce_ratio=0.7, y_weight=0.5,
+    min_samples_leaf=5, reduce_ratio=0.7, y_weight=0.2,
     refit_interval=5, auto_expand=True, expand_ratio=0.1,
     min_train_samples=100, n_bins=64, random_state=RNG,
 )
@@ -237,8 +237,8 @@ def main():
     print("=" * 72)
     print("  GeoXGB 0.2.0 (C++) vs XGBoost 3.x  —  Real-World Benchmark")
     print("=" * 72)
-    print(f"  GeoXGB reg : depth=3, n_rounds=500, lr=0.1, y_weight=0.5, er=0.1")
-    print(f"  GeoXGB clf : depth=5, n_rounds=500, lr=0.1, y_weight=0.5, er=0.1")
+    print(f"  GeoXGB reg : depth=3, n_rounds=500, lr=0.1, y_weight=0.2, er=0.1")
+    print(f"  GeoXGB clf : depth=5, n_rounds=500, lr=0.1, y_weight=0.2, er=0.1")
     print(f"  XGBoost reg: depth=3, n_estimators=500, lr=0.1, sub=0.8")
     print(f"  XGBoost clf: depth=5, n_estimators=500, lr=0.1, sub=0.8")
     print(f"  {N_SPLITS}-fold CV  |  no X normalization  |  NaN imputed (median/mode)")
