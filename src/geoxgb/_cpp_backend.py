@@ -54,6 +54,9 @@ _PYTHON_TO_CPP = {
     "blend_cross_term":      "blend_cross_term",
     "syn_partition_correct": "syn_partition_correct",
     "y_geom_coupling":       "y_geom_coupling",
+    "selective_target":      "selective_target",
+    "selective_k_pairs":     "selective_k_pairs",
+    "d_geom_threshold":      "d_geom_threshold",
     "hvrt_min_samples_leaf": "hvrt_min_samples_leaf",
     "n_partitions":          "hvrt_n_partitions",
 }

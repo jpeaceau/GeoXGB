@@ -26,6 +26,18 @@ Eigen::VectorXd blend_target(const Eigen::VectorXd& x_comp,
                               double y_weight,
                               bool use_cross = false);
 
+// Residual-guided selective pairwise target.
+// Computes |Pearson(zscore(z_a*z_b), zscore(resid))| for every feature pair (a,b),
+// selects the top k_pairs, and accumulates their z-scored products.
+// k_pairs <= 0 means auto: max(5, d*(d-1)/4).
+// Falls back to full pairwise target when k_pairs >= d*(d-1)/2.
+// Used by GeoXGB's Approach 1: at each HVRT refit, the cached geom_target is
+// replaced by a target that is biased toward pairs actually correlated with
+// the current residuals.
+Eigen::VectorXd compute_selective_target(const Eigen::MatrixXd& X_z,
+                                          const Eigen::VectorXd& resid,
+                                          int k_pairs = -1);
+
 // Internal helper: standardize a vector to zero-mean unit-variance (population).
 Eigen::VectorXd zscore(const Eigen::VectorXd& v);
 

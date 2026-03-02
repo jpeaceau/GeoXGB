@@ -43,6 +43,9 @@ PYBIND11_MODULE(_geoxgb_cpp, m) {
         .def_readwrite("blend_cross_term",      &GeoXGBConfig::blend_cross_term)
         .def_readwrite("syn_partition_correct", &GeoXGBConfig::syn_partition_correct)
         .def_readwrite("y_geom_coupling",       &GeoXGBConfig::y_geom_coupling)
+        .def_readwrite("selective_target",      &GeoXGBConfig::selective_target)
+        .def_readwrite("selective_k_pairs",     &GeoXGBConfig::selective_k_pairs)
+        .def_readwrite("d_geom_threshold",      &GeoXGBConfig::d_geom_threshold)
         .def("__repr__", [](const GeoXGBConfig& c) {
             return "<GeoXGBConfig n_rounds=" + std::to_string(c.n_rounds) +
                    " lr=" + std::to_string(c.learning_rate) +

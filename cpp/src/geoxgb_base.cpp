@@ -2,6 +2,7 @@
 #include "geoxgb/noise.h"
 #include "hvrt/types.h"
 #include "hvrt/hvrt.h"
+#include "hvrt/target.h"
 #include <algorithm>
 #include <numeric>
 #include <stdexcept>
@@ -193,6 +194,18 @@ GeoXGBBase::ResampleResult GeoXGBBase::do_resample(
                 yw_eff_trace_.push_back(yw_eff);
             }
         }
+        // ── Approach 1: selective pairwise target ────────────────────────────
+        // Replace the cached pure-geometry target with the top-k pair products
+        // most correlated with current residuals (Pearson ranking).  High-|r|
+        // pairs concentrate HVRT splits on directions that actually predict
+        // the gradient — especially important when d is small and most pairs
+        // are orthogonal to the residuals.
+        if (cfg_.selective_target) {
+            Eigen::VectorXd sel = hvrt::compute_selective_target(
+                h->X_z(), y_signal, cfg_.selective_k_pairs);
+            h->set_geom_target(sel);
+        }
+
         // ── Strategy 3: y_signal coupling ───────────────────────────────────
         // Blend residuals with the cached pure-geometry target so HVRT always
         // sees some geometric structure even when residuals are noisy.
@@ -468,6 +481,44 @@ void GeoXGBBase::fit_boosting(
     // Using the same edges that produced X_bin_full_ also ensures consistency:
     // split thresholds are aligned with the pre-computed bin assignments.
     gbt_bin_edges_ = full_binner_.edges();
+
+    // ── Approach 2: pure GBT fast path (skip HVRT for low-d) ─────────────────
+    // When d <= d_geom_threshold, HVRT's pairwise cooperation target has too
+    // few feature pairs to align with the gradient direction.  Running full
+    // GBT on the entire training set (no reduce/expand/refit) avoids discarding
+    // informative points and eliminates the HVRT overhead entirely.
+    // Threshold <= 0 disables this path (HVRT always active — default).
+    const bool use_hvrt = (cfg_.d_geom_threshold <= 0) || (d > cfg_.d_geom_threshold);
+    if (!use_hvrt) {
+        init_pred_ = init_prediction(y);
+        Eigen::VectorXd preds_pg = Eigen::VectorXd::Constant(n, init_pred_);
+
+        for (int i = 0; i < cfg_.n_rounds; ++i) {
+            Eigen::VectorXd grads = gradients(y, preds_pg);
+            if (!grads.allFinite()) grads.setZero();
+
+            hvrt::HVRTConfig tcfg;
+            tcfg.n_partitions     = 2 * (1 << cfg_.max_depth);
+            tcfg.min_samples_leaf = cfg_.min_samples_leaf;
+            tcfg.max_depth        = cfg_.max_depth;
+            tcfg.n_bins           = cfg_.n_bins;
+            tcfg.auto_tune        = false;
+            tcfg.random_state     = cfg_.random_state + i;
+            tcfg.split_strategy   = hvrt::SplitStrategy::Random;
+
+            WeakLearner wl;
+            wl.cont_cols = cont_cols_full_;
+            wl.lr        = cfg_.learning_rate;
+            wl.tree.inject_bin_edges(gbt_bin_edges_, cont_cols_full_, cfg_.n_bins);
+            wl.tree.build(X, X_bin_full_, cont_cols_full_, {}, grads, tcfg);
+
+            Eigen::VectorXd lp = wl.tree.predict(X);
+            preds_pg.noalias() += cfg_.learning_rate * lp;
+            trees_.push_back(std::move(wl));
+        }
+        fitted_ = true;
+        return;
+    }
 
     // ── Initial resample ──────────────────────────────────────────────────────
     std::shared_ptr<hvrt::HVRT> last_hvrt;

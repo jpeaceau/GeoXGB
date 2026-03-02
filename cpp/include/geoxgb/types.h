@@ -29,6 +29,22 @@ struct GeoXGBConfig {
     int    min_train_samples  = 5000;
     double bandwidth          = -1.0; // -1 = auto (Scott's rule per partition)
 
+    // Approach 1: residual-guided selective pairwise target.
+    // At each HVRT refit, replaces the static pairwise cooperation target with
+    // the top-k feature-pair products ranked by |Pearson(pair_product, residuals)|.
+    // Only pairs that actually predict the gradient direction are used.
+    // selective_k_pairs <= 0 → auto: max(5, d*(d-1)/4).
+    bool selective_target   = false;
+    int  selective_k_pairs  = -1;
+
+    // Approach 2: skip HVRT resampling entirely for low-d datasets.
+    // When d <= d_geom_threshold (and threshold > 0), fit_boosting runs as a
+    // pure GBT on the full training set without any HVRT reduce/expand/refit.
+    // On low-d data (d ≤ 8–12), the pairwise cooperation target has too few
+    // pairs to align with the gradient direction — HVRT sampling only discards
+    // informative points.  Threshold 0 = disabled (HVRT always active).
+    int  d_geom_threshold   = 0;
+
     // Y-coupling strategies (all off by default; enable one at a time)
     // S1: add x_z*y_comp interaction term to blend_target splitting criterion
     bool   blend_cross_term       = false;
