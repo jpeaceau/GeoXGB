@@ -8,7 +8,7 @@ Metrics tracked:
   gbt_ms      -- GBT tree build per round (no HVRT, baseline compute cost)
   refit_ms    -- HVRT refit cost per call (dominant cost at ri=5)
   knn_ms      -- kNN y-assign per expand call (expand_ratio=0.1)
-  fit_500_ms  -- Full fit, 500 rounds, er=0.1, ri=5 (synthetic end-to-end)
+  fit_1000_ms -- Full fit, 1000 rounds, er=0.1, ri=5 (synthetic end-to-end)
   r2_friedman -- Mean R² on friedman1, 3-fold CV (accuracy guard)
 
 Usage:
@@ -17,6 +17,14 @@ Usage:
   python benchmarks/perf_suite.py --quiet   # timing only, skip accuracy CV
 
 Exits 0 if all checks pass, 1 if any metric regresses beyond tolerance.
+
+Measurement methodology:
+  - N_REPEAT=10, WARMUP=2: stable on Windows with OS scheduling jitter
+  - Uses MEDIAN (not mean): robust to outlier high-load spikes
+  - N_ROUNDS=1000: large signal for refit/kNN; N_ROUNDS_GBT=2000 for GBT-only
+    (GBT-only signal is ~0.25ms/round so needs 2000 rounds to get 500ms signal)
+  - TIMING_TOL=0.25: 25% tolerance accounts for Windows load variability
+  - Each section re-uses measurements where possible to avoid redundant fits
 """
 import sys
 import io
@@ -34,22 +42,25 @@ sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding="utf-8", errors="repla
 BASELINE_FILE = pathlib.Path(__file__).parent / "baselines.json"
 
 # -- Tolerances ---------------------------------------------------------------
-# Timing: 20% band (machine load variance). Accuracy: 0.02 absolute.
-TIMING_TOL  = 0.20   # 20% above baseline → regression
-ACCURACY_TOL = 0.02  # 0.02 below baseline R² → regression
+# Timing: 25% band accounts for Windows OS scheduler jitter + machine load.
+# Accuracy: 0.02 absolute drop triggers regression.
+TIMING_TOL   = 0.25   # 25% above baseline → regression
+ACCURACY_TOL = 0.02   # 0.02 below baseline R² → regression
 
 # -- Dataset ------------------------------------------------------------------
-N_SAMPLES  = 5_000
-N_FEATURES = 10
-N_ROUNDS   = 500   # fast but representative (< 15 s total)
-N_REPEAT   = 5
-WARMUP     = 1
+N_SAMPLES    = 5_000
+N_FEATURES   = 10
+N_ROUNDS     = 1000   # primary timing signal (refit + kNN)
+N_ROUNDS_GBT = 2000   # amplifies tiny GBT-only signal for stable measurement
+N_REPEAT     = 10     # more repeats = stable median on Windows
+WARMUP       = 2      # two warm-ups before timing starts
 
 X_all, y_all = make_friedman1(n_samples=N_SAMPLES, n_features=N_FEATURES, random_state=0)
 
 
 # -- Helpers ------------------------------------------------------------------
 def timeit(fn, n_repeat=N_REPEAT, warmup=WARMUP):
+    """Returns (median_ms, p25_ms, p75_ms) — median is robust to OS jitter spikes."""
     for _ in range(warmup):
         fn()
     times = []
@@ -58,7 +69,7 @@ def timeit(fn, n_repeat=N_REPEAT, warmup=WARMUP):
         fn()
         times.append(1000.0 * (time.perf_counter() - t0))
     arr = np.array(times)
-    return float(arr.mean()), float(arr.std())
+    return float(np.median(arr)), float(np.percentile(arr, 25)), float(np.percentile(arr, 75))
 
 
 def hdr(title):
@@ -67,16 +78,17 @@ def hdr(title):
     print(f"{'='*60}")
 
 
-def row(label, val, std, baseline=None, tol=TIMING_TOL):
+def row(label, median, p25, p75, baseline=None, tol=TIMING_TOL):
+    spread = f"[{p25:.1f}–{p75:.1f}]"
     if baseline is None:
         tag = " [NEW]"
         delta = ""
     else:
-        pct = (val - baseline) / max(baseline, 1e-9)
+        pct = (median - baseline) / max(baseline, 1e-9)
         tag = " [PASS]" if pct <= tol else " [FAIL]"
         sign = "+" if pct >= 0 else ""
         delta = f"  baseline={baseline:.2f}  delta={sign}{100*pct:.1f}%"
-    print(f"  {label:<32} {val:8.2f} +/- {std:5.2f} ms{delta}{tag}")
+    print(f"  {label:<32} {median:8.2f} ms {spread:<16}{delta}{tag}")
     return tag.strip() == "[FAIL]"
 
 
@@ -127,59 +139,75 @@ def main():
 
     results   = {}
     any_fail  = False
+    # In update mode, suppress comparisons — we're setting a new baseline.
+    if args.update:
+        baselines = {}
 
-    # ── Warm-up ──────────────────────────────────────────────────────────────
-    print("Warming up JIT/OS effects...")
-    fit(n_rounds=50, expand_ratio=0.0, refit_interval=0)
-    fit(n_rounds=50, expand_ratio=0.1, refit_interval=5)
+    # ── Warm-up: prime OS/JIT for both code paths ────────────────────────────
+    print(f"Warming up... (N_ROUNDS={N_ROUNDS}, N_REPEAT={N_REPEAT}, WARMUP={WARMUP})")
+    for _ in range(WARMUP):
+        fit(n_rounds=100, expand_ratio=0.0, refit_interval=0)
+        fit(n_rounds=100, expand_ratio=0.1, refit_interval=5)
 
-    # ── Section 1: GBT baseline (no HVRT at all) ─────────────────────────────
+    # ── Section 1: GBT baseline ───────────────────────────────────────────────
+    # Use N_ROUNDS_GBT (2000) so the signal is ~500ms — large enough to measure
+    # reliably despite Windows OS jitter.  Divide back to per-round cost.
     hdr("Section 1 — GBT baseline (refit=0, er=0.0)")
-    mean, std = timeit(lambda: fit(N_ROUNDS, expand_ratio=0.0, refit_interval=0))
-    gbt_per   = mean / N_ROUNDS
-    gbt_std   = std  / N_ROUNDS
+    med, p25, p75 = timeit(lambda: fit(N_ROUNDS_GBT, expand_ratio=0.0, refit_interval=0))
+    gbt_per  = med / N_ROUNDS_GBT
+    gbt_p25  = p25 / N_ROUNDS_GBT
+    gbt_p75  = p75 / N_ROUNDS_GBT
     results["gbt_ms"] = gbt_per
     bl = baselines.get("gbt_ms")
-    any_fail |= row("GBT per round", gbt_per, gbt_std, bl)
+    any_fail |= row("GBT per round", gbt_per, gbt_p25, gbt_p75, bl)
+    # Also store absolute for wall-clock reference (not used in comparison)
+    gbt_total_1k = gbt_per * N_ROUNDS  # estimated GBT cost at N_ROUNDS
 
     # ── Section 2: HVRT refit cost ───────────────────────────────────────────
-    hdr("Section 2 — HVRT refit overhead (er=0.0, ri=5 vs ri=0)")
-    n_refits   = (N_ROUNDS - 1) // 5
-    mean_ri5,  std_ri5  = timeit(lambda: fit(N_ROUNDS, 0.0, refit_interval=5))
-    mean_ri0,  std_ri0  = timeit(lambda: fit(N_ROUNDS, 0.0, refit_interval=0))
-    refit_total = mean_ri5 - mean_ri0
+    hdr(f"Section 2 — HVRT refit overhead (er=0.0, ri=5 vs ri=0, n={N_ROUNDS})")
+    n_refits    = (N_ROUNDS - 1) // 5
+    med_ri5, p25_ri5, p75_ri5 = timeit(lambda: fit(N_ROUNDS, 0.0, refit_interval=5))
+    med_ri0, p25_ri0, p75_ri0 = timeit(lambda: fit(N_ROUNDS, 0.0, refit_interval=0))
+    refit_total = med_ri5 - med_ri0
     refit_per   = refit_total / max(n_refits, 1)
-    refit_std   = (std_ri5**2 + std_ri0**2)**0.5 / max(n_refits, 1)
+    # Spread: propagate p25/p75 difference as uncertainty
+    refit_p25   = (p25_ri5 - p75_ri0) / max(n_refits, 1)
+    refit_p75   = (p75_ri5 - p25_ri0) / max(n_refits, 1)
     results["refit_ms"] = refit_per
     bl = baselines.get("refit_ms")
-    any_fail |= row("HVRT refit per call", refit_per, refit_std, bl)
-    print(f"    ({n_refits} refits, total overhead: {refit_total:.1f} ms)")
+    any_fail |= row("HVRT refit per call", refit_per, refit_p25, refit_p75, bl)
+    print(f"    ({n_refits} refits, total overhead: {refit_total:.0f} ms)")
 
     # ── Section 3: kNN cost ──────────────────────────────────────────────────
-    hdr("Section 3 — kNN y-assign overhead (er=0.1 vs er=0.0, ri=5)")
-    mean_exp,  std_exp  = timeit(lambda: fit(N_ROUNDS, 0.1, refit_interval=5))
-    n_expands  = n_refits  # expand every refit call
-    knn_total  = mean_exp - mean_ri5
-    knn_per    = knn_total / max(n_expands, 1)
-    knn_std    = (std_exp**2 + std_ri5**2)**0.5 / max(n_expands, 1)
+    hdr(f"Section 3 — kNN y-assign overhead (er=0.1 vs er=0.0, n={N_ROUNDS})")
+    med_exp, p25_exp, p75_exp = timeit(lambda: fit(N_ROUNDS, 0.1, refit_interval=5))
+    n_expands   = n_refits  # expand every refit call
+    knn_total   = med_exp - med_ri5
+    knn_per     = knn_total / max(n_expands, 1)
+    knn_p25     = (p25_exp - p75_ri5) / max(n_expands, 1)
+    knn_p75     = (p75_exp - p25_ri5) / max(n_expands, 1)
     results["knn_ms"] = knn_per
     bl = baselines.get("knn_ms")
-    any_fail |= row("kNN y-assign per call", knn_per, knn_std, bl)
-    print(f"    ({n_expands} expands, total: {knn_total:.1f} ms)")
+    any_fail |= row("kNN y-assign per call", knn_per, knn_p25, knn_p75, bl)
+    print(f"    ({n_expands} expands, total: {knn_total:.0f} ms)")
 
     # ── Section 4: End-to-end fit ─────────────────────────────────────────────
-    hdr("Section 4 — Full end-to-end fit (er=0.1, ri=5)")
-    results["fit_500_ms"] = mean_exp
-    bl = baselines.get("fit_500_ms")
-    any_fail |= row(f"Full fit ({N_ROUNDS} rounds)", mean_exp, std_exp, bl)
+    hdr(f"Section 4 — Full end-to-end fit (er=0.1, ri=5, n={N_ROUNDS})")
+    results["fit_1000_ms"] = med_exp
+    bl = baselines.get("fit_1000_ms")
+    any_fail |= row(f"Full fit ({N_ROUNDS} rounds)", med_exp, p25_exp, p75_exp, bl)
+    print(f"    GBT: ~{gbt_total_1k:.0f} ms  refit: ~{refit_total:.0f} ms"
+          f"  kNN: ~{knn_total:.0f} ms")
 
     # ── Section 5: Accuracy guard ────────────────────────────────────────────
     if not args.quiet:
         hdr("Section 5 — Accuracy (friedman1, 3-fold CV)")
         r2_scores = []
         kf = KFold(n_splits=3, shuffle=True, random_state=42)
+        base_cv = {k: v for k, v in BASE_CFG.items() if k != "refit_interval"}
         for fold, (tr, va) in enumerate(kf.split(X_all)):
-            cfg = make_cpp_config(n_rounds=300, expand_ratio=0.1, **BASE_CFG)
+            cfg = make_cpp_config(n_rounds=300, expand_ratio=0.1,
+                                  refit_interval=5, **base_cv)
             m = CppGeoXGBRegressor(cfg)
             m.fit(X_all[tr], y_all[tr])
             preds = m.predict(X_all[va])
