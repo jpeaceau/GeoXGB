@@ -96,7 +96,9 @@ HVRT& HVRT::fit(
 
     // 4. Y-weight blending
     if (y && cfg_.y_weight > 0.0f) {
-        target_vec = blend_target(target_vec, *y, static_cast<double>(cfg_.y_weight));
+        target_vec = blend_target(target_vec, *y,
+                                  static_cast<double>(cfg_.y_weight),
+                                  cfg_.blend_cross_term);
     }
 
     // 5. Build partition tree
@@ -134,7 +136,7 @@ HVRT& HVRT::refit(std::optional<Eigen::VectorXd> y, double y_weight_override)
                                                   : static_cast<double>(cfg_.y_weight);
     Eigen::VectorXd target_vec = geom_target_cache_;
     if (y && yw > 0.0) {
-        target_vec = blend_target(target_vec, *y, yw);
+        target_vec = blend_target(target_vec, *y, yw, cfg_.blend_cross_term);
     }
 
     // Re-run tree build — bin_edges_ will be reused (bin_edges_valid_ = true from fit())
