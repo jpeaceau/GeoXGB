@@ -76,6 +76,9 @@ VARIANTS = [
     ("A1_selective",   dict(selective_target=True)),
     ("A2_dthresh12",   dict(d_geom_threshold=12)),
     ("A1+A2",          dict(selective_target=True, d_geom_threshold=12)),
+    ("A3_rc25",        dict(residual_correct_lambda=25.0)),
+    ("A3_rc50",        dict(residual_correct_lambda=50.0)),
+    ("A1+A3_rc25",     dict(selective_target=True, residual_correct_lambda=25.0)),
     ("XGBoost",        None),   # sentinel; handled separately
 ]
 
@@ -196,15 +199,20 @@ def print_table(datasets, all_results):
     baseline = all_results["baseline"]
     xgb_res  = all_results["XGBoost"]
 
+    GEO_VARIANTS = ["A1_selective", "A2_dthresh12", "A1+A2",
+                    "A3_rc25", "A3_rc50", "A1+A3_rc25"]
+
     print()
-    print(f"{'Dataset':<26} {'M':>3}  {'baseline':>10}  {'A1':>10}  {'A2':>10}  {'A1+A2':>10}  {'XGBoost':>10}")
-    print("-" * 82)
+    print(f"{'Dataset':<26} {'M':>3}  {'baseline':>10}  "
+          + "  ".join(f"{v:>14}" for v in GEO_VARIANTS)
+          + f"  {'XGBoost':>14}")
+    print("-" * (26 + 4 + 12 + len(GEO_VARIANTS) * 16 + 16))
     for ds_name, (task, X, y) in datasets.items():
         metric = metric_map.get(ds_name, "?")
         row = f"  {ds_name:<24} {metric:>3}"
         b_mean = baseline[ds_name].mean()
-        row += f"  {b_mean:>+.4f}"
-        for vname in ("A1_selective", "A2_dthresh12", "A1+A2"):
+        row += f"  {b_mean:>+.4f}    "
+        for vname in GEO_VARIANTS:
             s = all_results[vname][ds_name]
             row += f"  {s.mean():+.4f}({s.mean()-b_mean:+.4f})"
         xm = xgb_res[ds_name].mean()
@@ -212,21 +220,21 @@ def print_table(datasets, all_results):
         print(row)
 
     print()
-    print("  Format: mean(Δ_vs_baseline)")
+    print("  Format: mean(delta_vs_baseline)")
     print()
 
-    print(f"  {'Variant':<14}  {'mean_Δ_vs_base':>16}  {'reg_Δ':>8}  {'clf_Δ':>8}  {'vs_XGB':>8}")
+    print(f"  {'Variant':<16}  {'mean_d_vs_base':>16}  {'reg_d':>8}  {'clf_d':>8}  {'vs_XGB':>8}")
     print("  " + "-" * 64)
     reg_ds = [k for k, (t, _, _) in datasets.items() if t == "reg"]
     clf_ds = [k for k, (t, _, _) in datasets.items() if t == "clf"]
 
-    for vname in ("A1_selective", "A2_dthresh12", "A1+A2", "XGBoost"):
+    for vname in GEO_VARIANTS + ["XGBoost"]:
         res = all_results[vname]
         deltas_b = [res[d].mean() - baseline[d].mean() for d in datasets]
         delta_xgb = np.mean([res[d].mean() - xgb_res[d].mean() for d in datasets])
         rdelta = np.mean([res[d].mean() - baseline[d].mean() for d in reg_ds if d in res])
         cdelta = np.mean([res[d].mean() - baseline[d].mean() for d in clf_ds if d in res])
-        print(f"  {vname:<14}  {np.mean(deltas_b):>+16.4f}  {rdelta:>+8.4f}  "
+        print(f"  {vname:<16}  {np.mean(deltas_b):>+16.4f}  {rdelta:>+8.4f}  "
               f"{cdelta:>+8.4f}  {delta_xgb:>+8.4f}")
     print()
 
@@ -244,9 +252,10 @@ def main():
     print_table(datasets, all_results)
 
     # Recommendation
+    geo_names = [v for v, _ in VARIANTS if v != "XGBoost"]
     gains = {v: np.mean([all_results[v][d].mean() - all_results["baseline"][d].mean()
                           for d in datasets])
-             for v in ("A1_selective", "A2_dthresh12", "A1+A2")}
+             for v in geo_names if v != "baseline"}
     best = max(gains, key=gains.get)
     print(f"  Best GeoXGB variant: {best}  (mean Δ_vs_baseline = {gains[best]:+.4f})")
     xgb_gap = np.mean([all_results["baseline"][d].mean() - all_results["XGBoost"][d].mean()

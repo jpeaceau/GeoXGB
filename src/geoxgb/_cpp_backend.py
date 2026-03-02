@@ -56,7 +56,8 @@ _PYTHON_TO_CPP = {
     "y_geom_coupling":       "y_geom_coupling",
     "selective_target":      "selective_target",
     "selective_k_pairs":     "selective_k_pairs",
-    "d_geom_threshold":      "d_geom_threshold",
+    "d_geom_threshold":          "d_geom_threshold",
+    "residual_correct_lambda":   "residual_correct_lambda",
     "hvrt_min_samples_leaf": "hvrt_min_samples_leaf",
     "n_partitions":          "hvrt_n_partitions",
 }

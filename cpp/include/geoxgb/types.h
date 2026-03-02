@@ -45,6 +45,17 @@ struct GeoXGBConfig {
     // informative points.  Threshold 0 = disabled (HVRT always active).
     int  d_geom_threshold   = 0;
 
+    // Approach 3: per-partition z-space sub-split residual correction.
+    // At each HVRT refit, for each partition p, finds the best variance-reducing
+    // binary split of the current residuals in z-space (using all n training
+    // samples in p).  Applies the shrunk per-child mean correction to the
+    // synthetic y targets:
+    //   delta_child_shrunk = mean(resid[child]) * n_child / (n_child + lambda)
+    // At lambda → ∞ the correction → 0 (safe default).  lambda = 50 showed
+    // break-even in dual_strategy.py; good starting range: [25, 200].
+    // 0.0 = disabled.
+    double residual_correct_lambda = 0.0;
+
     // Y-coupling strategies (all off by default; enable one at a time)
     // S1: add x_z*y_comp interaction term to blend_target splitting criterion
     bool   blend_cross_term       = false;
