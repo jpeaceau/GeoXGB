@@ -195,10 +195,9 @@ def main():
               f"{sum(1 for d in deltas if d>0)/len(deltas)*100:.0f}%   {detail}")
 
     # Reference: default config (er=0.1, yw=0.5)
-    if (0.1, 0.5) in dict([(k[:2], k) for er, yw, *k in ranked]):
-        default_row = next((r for r in ranked if r[0] == 0.1 and r[1] == 0.5), None)
-        if default_row:
-            print(f"\n  Default config (er=0.1, yw=0.5): mean Δ = {default_row[2]:+.4f}")
+    default_row = next((r for r in ranked if r[0] == 0.1 and r[1] == 0.5), None)
+    if default_row:
+        print(f"\n  Default config (er=0.1, yw=0.5): mean Δ = {default_row[2]:+.4f}")
 
     best = ranked[0]
     print(f"  Best config  (er={best[0]}  yw={best[1]}): mean Δ = {best[2]:+.4f}")
