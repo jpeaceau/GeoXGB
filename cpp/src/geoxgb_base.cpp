@@ -35,6 +35,36 @@ Eigen::VectorXd GeoXGBBase::knn_assign_y(
 
     Eigen::VectorXd y_syn(n_syn);
 
+    // ── Large-n_red guard ─────────────────────────────────────────────────────
+    // The n_syn × n_red distance matrix grows as O(n²) at scale:
+    // n_syn=10k, n_red=70k (n=100k, er=0.1, rr=0.7) → 5.6 GB.
+    // When n_red exceeds KNN_RED_CAP, subsample via Fisher-Yates and recurse.
+    // Recursion is safe: the inner call has n_red == KNN_RED_CAP ≤ cap.
+    // The HVRT-reduced set is geometrically dense, so approximate NN quality
+    // is preserved: at cap=5k from 70k, partition density ≈ 5k/70k × n_part
+    // which still yields good IDW estimates within each geometric region.
+    static constexpr int KNN_RED_CAP = 5000;
+    if (n_red > KNN_RED_CAP) {
+        uint64_t lcg = static_cast<uint64_t>(n_red) | 1u;
+        auto lcg_next = [&](int range) -> int {
+            lcg = lcg * 6364136223846793005ULL + 1442695040888963407ULL;
+            return static_cast<int>((lcg >> 33) % static_cast<uint64_t>(range));
+        };
+        std::vector<int> sub(n_red);
+        std::iota(sub.begin(), sub.end(), 0);
+        for (int i = 0; i < KNN_RED_CAP; ++i) {
+            int j = i + lcg_next(n_red - i);
+            std::swap(sub[i], sub[j]);
+        }
+        Eigen::MatrixXd X_red_sub(KNN_RED_CAP, X_red_z.cols());
+        Eigen::VectorXd y_red_sub(KNN_RED_CAP);
+        for (int i = 0; i < KNN_RED_CAP; ++i) {
+            X_red_sub.row(i) = X_red_z.row(sub[i]);
+            y_red_sub[i]     = y_red[sub[i]];
+        }
+        return knn_assign_y(X_syn_z, X_red_sub, y_red_sub);
+    }
+
     // ── BLAS pairwise squared-distance matrix ────────────────────────────────
     // D[i,j] = ||X_syn_z[i] - X_red_z[j]||²
     //        = ||X_syn_z[i]||² - 2·X_syn_z[i]·X_red_z[j]ᵀ + ||X_red_z[j]||²
