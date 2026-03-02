@@ -124,14 +124,17 @@ HVRT& HVRT::fit(
 // Expander is also skipped when the new partition assignments are identical to the
 // previous ones (stable tree → same KDE parameters → no need to redo KDE fitting).
 
-HVRT& HVRT::refit(std::optional<Eigen::VectorXd> y)
+HVRT& HVRT::refit(std::optional<Eigen::VectorXd> y, double y_weight_override)
 {
     if (!fitted_) throw std::runtime_error("HVRT::refit() called before fit()");
 
-    // Blend cached geometry target with new y signal
+    // Blend cached geometry target with new y signal.
+    // y_weight_override >= 0 → use it instead of cfg_.y_weight (adaptive scheduler).
+    const double yw = (y_weight_override >= 0.0) ? y_weight_override
+                                                  : static_cast<double>(cfg_.y_weight);
     Eigen::VectorXd target_vec = geom_target_cache_;
-    if (y && cfg_.y_weight > 0.0f) {
-        target_vec = blend_target(target_vec, *y, static_cast<double>(cfg_.y_weight));
+    if (y && yw > 0.0) {
+        target_vec = blend_target(target_vec, *y, yw);
     }
 
     // Re-run tree build — bin_edges_ will be reused (bin_edges_valid_ = true from fit())

@@ -19,7 +19,8 @@ struct GeoXGBConfig {
     // HVRT resampling
     double reduce_ratio       = 0.7;
     double expand_ratio       = 0.0;
-    double y_weight           = 0.2;   // 0.2 beats 0.5 on real-world data (param_sweep_reg)
+    double y_weight           = 0.2;   // upper bound when adaptive_y_weight=true
+    bool   adaptive_y_weight  = true;  // scale y_weight by |ρ(geom, residuals)| each refit
     int    refit_interval     = 20;   // 0 = disable
     bool   auto_noise         = true;
     bool   noise_guard        = true;
