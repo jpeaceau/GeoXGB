@@ -51,6 +51,9 @@ _PYTHON_TO_CPP = {
     "random_state":          "random_state",
     "variance_weighted":     "variance_weighted",
     "adaptive_y_weight":     "adaptive_y_weight",
+    "blend_cross_term":      "blend_cross_term",
+    "syn_partition_correct": "syn_partition_correct",
+    "y_geom_coupling":       "y_geom_coupling",
     "hvrt_min_samples_leaf": "hvrt_min_samples_leaf",
     "n_partitions":          "hvrt_n_partitions",
 }

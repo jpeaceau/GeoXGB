@@ -17,11 +17,14 @@ Eigen::VectorXd compute_sum_target(const Eigen::MatrixXd& X_z);
 
 // Blend X-derived composite target with external y.
 // y_component = zscore(|y_norm - median(y_norm)|)
-// result = zscore(x_comp * (1-y_weight) + y_comp * y_weight)   [conceptually]
-// Actually: result = zscore(x_comp) blended with y_comp via y_weight.
+// result = zscore(x_comp) blended with y_comp via y_weight.
+// use_cross: also add a zscore(x_z * y_comp) interaction term scaled by y_weight.
+//   The cross term is high where geometric cooperation AND y-extremality co-occur,
+//   encouraging partitions that separate both structure and y simultaneously.
 Eigen::VectorXd blend_target(const Eigen::VectorXd& x_comp,
                               const Eigen::VectorXd& y,
-                              double y_weight);
+                              double y_weight,
+                              bool use_cross = false);
 
 // Internal helper: standardize a vector to zero-mean unit-variance (population).
 Eigen::VectorXd zscore(const Eigen::VectorXd& v);

@@ -29,6 +29,16 @@ struct GeoXGBConfig {
     int    min_train_samples  = 5000;
     double bandwidth          = -1.0; // -1 = auto (Scott's rule per partition)
 
+    // Y-coupling strategies (all off by default; enable one at a time)
+    // S1: add x_z*y_comp interaction term to blend_target splitting criterion
+    bool   blend_cross_term       = false;
+    // S2: after knn_assign_y, shift each synthetic y by the within-partition
+    //     mean difference (real mean − kNN mean) to remove interpolation bias
+    bool   syn_partition_correct  = false;
+    // S3: at refit, pass y_coupled = (1-α)*y_std + α*geom to HVRT instead of
+    //     raw residuals; α=y_geom_coupling (0 = off, disabled at first fit)
+    double y_geom_coupling        = 0.0;
+
     // HVRT partition tree sizing (both -1 = HVRT auto-tune)
     int    hvrt_min_samples_leaf = -1;
     int    hvrt_n_partitions     = -1;

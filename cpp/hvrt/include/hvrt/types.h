@@ -36,6 +36,7 @@ struct HVRTConfig {
     int    n_threads       = 4;
     int    random_state    = 42;
     float  y_weight        = 0.0f;
+    bool   blend_cross_term = false; // add x_z*y_comp interaction to blend_target
     bool   auto_tune       = true;
     std::string bandwidth  = "auto";  // "auto", "scott", or numeric string
     SplitStrategy split_strategy = SplitStrategy::Best;

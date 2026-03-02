@@ -52,7 +52,8 @@ Eigen::VectorXd compute_sum_target(const Eigen::MatrixXd& X_z) {
 
 Eigen::VectorXd blend_target(const Eigen::VectorXd& x_comp,
                               const Eigen::VectorXd& y,
-                              double y_weight) {
+                              double y_weight,
+                              bool use_cross) {
     // Normalise y to [0,1] range, then compute deviation from median
     double y_min = y.minCoeff();
     double y_max = y.maxCoeff();
@@ -70,6 +71,16 @@ Eigen::VectorXd blend_target(const Eigen::VectorXd& x_comp,
 
     Eigen::VectorXd x_z = zscore(x_comp);
     Eigen::VectorXd blended = (1.0 - y_weight) * x_z + y_weight * y_comp;
+
+    if (use_cross) {
+        // Cross term: zscore(x_z ∘ y_comp) is high where both geometric
+        // cooperation AND y-extremality co-occur in the same sample.
+        // This biases the partition tree towards regions that exhibit both
+        // structural and predictive alignment simultaneously.
+        Eigen::VectorXd cross = zscore((x_z.array() * y_comp.array()).matrix());
+        blended += y_weight * cross;
+    }
+
     return zscore(blended);
 }
 

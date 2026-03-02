@@ -40,6 +40,9 @@ PYBIND11_MODULE(_geoxgb_cpp, m) {
         .def_readwrite("random_state",          &GeoXGBConfig::random_state)
         .def_readwrite("variance_weighted",     &GeoXGBConfig::variance_weighted)
         .def_readwrite("adaptive_y_weight",     &GeoXGBConfig::adaptive_y_weight)
+        .def_readwrite("blend_cross_term",      &GeoXGBConfig::blend_cross_term)
+        .def_readwrite("syn_partition_correct", &GeoXGBConfig::syn_partition_correct)
+        .def_readwrite("y_geom_coupling",       &GeoXGBConfig::y_geom_coupling)
         .def("__repr__", [](const GeoXGBConfig& c) {
             return "<GeoXGBConfig n_rounds=" + std::to_string(c.n_rounds) +
                    " lr=" + std::to_string(c.learning_rate) +

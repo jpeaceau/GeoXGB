@@ -6,6 +6,7 @@
 #include <numeric>
 #include <stdexcept>
 #include <cmath>
+#include <unordered_map>
 
 namespace geoxgb {
 
@@ -147,6 +148,9 @@ GeoXGBBase::ResampleResult GeoXGBBase::do_resample(
         hcfg.auto_tune    = false;
     }
 
+    // Forward S1 coupling flag to HVRT
+    hcfg.blend_cross_term = cfg_.blend_cross_term;
+
     // Bandwidth: auto → HVRT handles it; numeric → pass as string
     if (cfg_.bandwidth > 0.0) {
         hcfg.bandwidth = std::to_string(cfg_.bandwidth);
@@ -189,7 +193,30 @@ GeoXGBBase::ResampleResult GeoXGBBase::do_resample(
                 yw_eff_trace_.push_back(yw_eff);
             }
         }
-        h->refit(y_signal, yw_eff);
+        // ── Strategy 3: y_signal coupling ───────────────────────────────────
+        // Blend residuals with the cached pure-geometry target so HVRT always
+        // sees some geometric structure even when residuals are noisy.
+        // y_for_refit = (1-α)*z(y_signal) + α*geom_target, re-scaled to
+        // y_signal's original range so blend_target's normalisation is unaffected.
+        // Only active at refit (initial fit has no geom_target yet).
+        Eigen::VectorXd y_for_refit = y_signal;
+        if (cfg_.y_geom_coupling > 0.0) {
+            const Eigen::VectorXd& geom = h->geom_target();
+            const int n_s = static_cast<int>(y_signal.size());
+            double y_mean = y_signal.mean();
+            double y_var  = (y_signal.array() - y_mean).square().mean();
+            if (y_var > 1e-20 && n_s > 1) {
+                double y_std = std::sqrt(y_var);
+                Eigen::VectorXd y_z = (y_signal.array() - y_mean) / y_std;
+                // geom is already ~N(0,1) (output of compute_pairwise_target)
+                Eigen::VectorXd combined = (1.0 - cfg_.y_geom_coupling) * y_z
+                                         + cfg_.y_geom_coupling * geom;
+                // Restore original scale so blend_target's [0,1] normalisation
+                // and y_weight blending remain semantically consistent.
+                y_for_refit = (combined.array() * y_std + y_mean).matrix();
+            }
+        }
+        h->refit(y_for_refit, yw_eff);
     } else {
         h = std::make_shared<hvrt::HVRT>(hcfg);
         h->fit(X_full, y_signal);
@@ -226,6 +253,57 @@ GeoXGBBase::ResampleResult GeoXGBBase::do_resample(
 
     int n_expanded = 0;
 
+    // ── Strategy 2: per-partition Y mean correction helper ───────────────────
+    // After knn_assign_y() assigns y_syn via IDW, the per-partition synthetic
+    // mean may drift from the real reduced mean (boundary effects: IDW averages
+    // across partitions when the nearest neighbours straddle a boundary).
+    // This lambda shifts each y_syn[i] by delta_p = mean(y_red_in_p) - mean(y_syn_in_p)
+    // for the partition p that X_syn[i] was routed to.
+    // Requirements: h fitted, red_idx valid, X_syn in original feature space.
+    auto partition_correct = [&](Eigen::VectorXd& y_syn,
+                                  const Eigen::MatrixXd& X_syn,
+                                  const Eigen::VectorXi& r_idx,
+                                  const Eigen::VectorXd& y_r) {
+        if (!cfg_.syn_partition_correct) return;
+        const Eigen::VectorXi& tr_pids = h->partition_ids(); // size n
+        Eigen::VectorXi syn_pids = h->apply(X_syn);          // route X_syn → partition ids
+
+        const int n_syn_loc = static_cast<int>(y_syn.size());
+        const int n_red_loc = static_cast<int>(r_idx.size());
+
+        // Accumulate real-sample per-partition sum/count
+        std::unordered_map<int, std::pair<double,int>> real_stat;
+        real_stat.reserve(n_red_loc);
+        for (int i = 0; i < n_red_loc; ++i) {
+            int pid = tr_pids[r_idx[i]];
+            auto& s = real_stat[pid];
+            s.first  += y_r[i];
+            s.second += 1;
+        }
+
+        // Accumulate synthetic per-partition sum/count
+        std::unordered_map<int, std::pair<double,int>> syn_stat;
+        syn_stat.reserve(n_syn_loc);
+        for (int i = 0; i < n_syn_loc; ++i) {
+            auto& s = syn_stat[syn_pids[i]];
+            s.first  += y_syn[i];
+            s.second += 1;
+        }
+
+        // Apply delta correction per synthetic sample
+        for (int i = 0; i < n_syn_loc; ++i) {
+            int pid = syn_pids[i];
+            auto ir = real_stat.find(pid);
+            auto is = syn_stat.find(pid);
+            if (ir != real_stat.end() && is != syn_stat.end() &&
+                ir->second.second > 0  && is->second.second > 0) {
+                double mean_real = ir->second.first / ir->second.second;
+                double mean_syn  = is->second.first / is->second.second;
+                y_syn[i] += (mean_real - mean_syn);
+            }
+        }
+    };
+
     // Auto-expand: fill up to min_train_samples using Epanechnikov KDE
     bool expansion_risk = cfg_.auto_expand && (n < cfg_.min_train_samples);
     if (expansion_risk && cfg_.expand_ratio == 0.0 && n_red < cfg_.min_train_samples) {
@@ -248,6 +326,7 @@ GeoXGBBase::ResampleResult GeoXGBBase::do_resample(
             Eigen::MatrixXd X_syn_z = h->to_z(X_syn);
 
             Eigen::VectorXd y_syn = knn_assign_y(X_syn_z, X_red_z, y_red);
+            partition_correct(y_syn, X_syn, red_idx, y_red);  // S2
 
             // Concatenate real + synthetic
             int n_out = n_red + n_expand;
@@ -286,6 +365,7 @@ GeoXGBBase::ResampleResult GeoXGBBase::do_resample(
                 X_red_z.row(i) = h->X_z().row(red_idx[i]);
             Eigen::MatrixXd X_syn_z = h->to_z(X_syn);
             Eigen::VectorXd y_syn = knn_assign_y(X_syn_z, X_red_z, y_red);
+            partition_correct(y_syn, X_syn, red_idx, y_red);  // S2
 
             int n_out = n_red + n_expand;
             Eigen::MatrixXd X_out(n_out, X_full.cols());
