@@ -1,0 +1,32 @@
+# Build artifacts
+*.pyd
+*.so
+*.dll
+dist/
+build/
+*.egg-info/
+__pycache__/
+*.pyc
+*.pyo
+_skbuild/
+.cmake/
+CMakeFiles/
+CMakeCache.txt
+cmake_install.cmake
+Makefile
+*.vcxproj
+*.sln
+
+# Data / results (large, not source)
+benchmarks/results/
+benchmarks/__pycache__/
+data/*.csv
+insights/
+
+# IDE
+.idea/
+.vscode/
+
+# Pip
+*.whl
+pip-wheel-metadata/
