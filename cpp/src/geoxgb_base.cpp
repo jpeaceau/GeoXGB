@@ -125,6 +125,91 @@ Eigen::VectorXd GeoXGBBase::knn_assign_y(
     return y_syn;
 }
 
+// ── Per-partition z-space sub-split residual correction ───────────────────────
+// For each HVRT partition p, finds the best variance-reducing binary split of
+// y_signal (current residuals) in z-space.  Applies the shrunk per-child mean
+// correction to synthetic y targets:
+//   delta_shrunk = mean(resid[child]) * n_child / (n_child + lambda)
+// Only called during refit (y_signal = gradients), never on initial fit.
+
+static void apply_sub_split_correction(
+        const Eigen::MatrixXd&  X_z,       // n_train × d  (training z-coords)
+        const Eigen::VectorXd&  y_signal,  // n_train      (current residuals)
+        const Eigen::VectorXi&  tr_pids,   // n_train      (training partition IDs)
+        const Eigen::MatrixXd&  X_syn_z,   // n_syn × d    (synthetic z-coords)
+        const Eigen::VectorXi&  syn_pids,  // n_syn        (synthetic partition IDs)
+        Eigen::VectorXd&        y_syn,     // [in/out]     (synthetic targets)
+        double lambda,
+        int min_leaf = 3)
+{
+    const int n_train = static_cast<int>(X_z.rows());
+    const int d       = static_cast<int>(X_z.cols());
+    const int n_syn   = static_cast<int>(y_syn.size());
+    if (n_syn == 0 || lambda <= 0.0) return;
+
+    // Group training indices by partition
+    std::unordered_map<int, std::vector<int>> part_idx;
+    part_idx.reserve(64);
+    for (int i = 0; i < n_train; ++i)
+        part_idx[tr_pids[i]].push_back(i);
+
+    // For each partition: find best variance-reducing z-space split of residuals
+    struct SplitInfo { int feat = -1; double thresh = 0.0, dl = 0.0, dr = 0.0; };
+    std::unordered_map<int, SplitInfo> splits;
+    splits.reserve(static_cast<int>(part_idx.size()));
+
+    for (auto& [pid, idx] : part_idx) {
+        const int n_p = static_cast<int>(idx.size());
+        if (n_p < 2 * min_leaf) continue;
+
+        SplitInfo best;
+        double best_score = -1.0;
+
+        for (int k = 0; k < d; ++k) {
+            // Gather (z_k, resid) pairs and sort by z_k
+            std::vector<std::pair<double,double>> kv(n_p);
+            for (int i = 0; i < n_p; ++i)
+                kv[i] = { X_z(idx[i], k), y_signal[idx[i]] };
+            std::sort(kv.begin(), kv.end());
+
+            // Prefix sum of residuals
+            double total = 0.0;
+            for (auto& pv : kv) total += pv.second;
+
+            // Sweep: sum_l accumulates left, sum_r = total - sum_l
+            double sum_l = 0.0;
+            for (int s = 0; s < min_leaf - 1; ++s) sum_l += kv[s].second;
+
+            for (int sp = min_leaf - 1; sp < n_p - min_leaf; ++sp) {
+                sum_l += kv[sp].second;
+                const int    n_l    = sp + 1;
+                const int    n_r    = n_p - n_l;
+                const double mean_l = sum_l / n_l;
+                const double mean_r = (total - sum_l) / n_r;
+                // Variance-reduction proxy: maximise between-group SS of means
+                const double score = (double)n_l * mean_l * mean_l
+                                   + (double)n_r * mean_r * mean_r;
+                if (score > best_score) {
+                    best_score   = score;
+                    best.feat    = k;
+                    best.thresh  = kv[sp].first;
+                    best.dl      = mean_l * n_l / (n_l + lambda);
+                    best.dr      = mean_r * n_r / (n_r + lambda);
+                }
+            }
+        }
+        if (best.feat >= 0) splits[pid] = best;
+    }
+
+    // Apply correction to each synthetic sample
+    for (int i = 0; i < n_syn; ++i) {
+        auto it = splits.find(syn_pids[i]);
+        if (it == splits.end()) continue;
+        const SplitInfo& si = it->second;
+        y_syn[i] += (X_syn_z(i, si.feat) <= si.thresh) ? si.dl : si.dr;
+    }
+}
+
 // ── HVRT resampling ───────────────────────────────────────────────────────────
 
 GeoXGBBase::ResampleResult GeoXGBBase::do_resample(
@@ -134,6 +219,11 @@ GeoXGBBase::ResampleResult GeoXGBBase::do_resample(
         std::shared_ptr<hvrt::HVRT>& hvrt_out)
 {
     const int n = static_cast<int>(X_full.rows());
+
+    // Track whether this is an initial fit (y_signal = raw targets) vs a refit
+    // (y_signal = gradients/residuals).  The sub-split correction is meaningful
+    // only during refit, when y_signal is centred near zero.
+    const bool is_initial_fit = !(hvrt_out && hvrt_out->fitted());
 
     // Build HVRT config
     hvrt::HVRTConfig hcfg;
@@ -340,6 +430,14 @@ GeoXGBBase::ResampleResult GeoXGBBase::do_resample(
 
             Eigen::VectorXd y_syn = knn_assign_y(X_syn_z, X_red_z, y_red);
             partition_correct(y_syn, X_syn, red_idx, y_red);  // S2
+            // A3: per-partition z-space sub-split residual correction (refit only)
+            if (!is_initial_fit && cfg_.residual_correct_lambda > 0.0) {
+                Eigen::VectorXi syn_pids = h->apply(X_syn);
+                apply_sub_split_correction(
+                    h->X_z(), y_signal, h->partition_ids(),
+                    X_syn_z, syn_pids, y_syn,
+                    cfg_.residual_correct_lambda);
+            }
 
             // Concatenate real + synthetic
             int n_out = n_red + n_expand;
@@ -379,6 +477,14 @@ GeoXGBBase::ResampleResult GeoXGBBase::do_resample(
             Eigen::MatrixXd X_syn_z = h->to_z(X_syn);
             Eigen::VectorXd y_syn = knn_assign_y(X_syn_z, X_red_z, y_red);
             partition_correct(y_syn, X_syn, red_idx, y_red);  // S2
+            // A3: per-partition z-space sub-split residual correction (refit only)
+            if (!is_initial_fit && cfg_.residual_correct_lambda > 0.0) {
+                Eigen::VectorXi syn_pids = h->apply(X_syn);
+                apply_sub_split_correction(
+                    h->X_z(), y_signal, h->partition_ids(),
+                    X_syn_z, syn_pids, y_syn,
+                    cfg_.residual_correct_lambda);
+            }
 
             int n_out = n_red + n_expand;
             Eigen::MatrixXd X_out(n_out, X_full.cols());
