@@ -43,7 +43,8 @@ def _fitted_reg(X=None, y=None, **kwargs):
         X, y = _clean_data()
     defaults = dict(n_rounds=20, refit_interval=5, random_state=0)
     defaults.update(kwargs)
-    return GeoXGBRegressor(**defaults).fit(X, y), X, y
+    # feature_types forces Python path (report API requires Python backend)
+    return GeoXGBRegressor(**defaults).fit(X, y, feature_types=["continuous"] * P), X, y
 
 
 def _fitted_clf(n_classes=2):
@@ -53,7 +54,7 @@ def _fitted_clf(n_classes=2):
         n_classes=n_classes, n_clusters_per_class=1, random_state=0,
     )
     clf = GeoXGBClassifier(n_rounds=20, refit_interval=5, random_state=0)
-    clf.fit(X, y)
+    clf.fit(X, y, feature_types=["continuous"] * P)
     return clf, X, y
 
 
@@ -130,7 +131,7 @@ def test_noise_report_noisy_data():
     X = rng2.standard_normal((600, P))
     y = 3 * X[:, 0] - 2 * X[:, 1] + rng2.standard_normal(600) * 30.0
     model = GeoXGBRegressor(n_rounds=20, refit_interval=5, auto_noise=True, random_state=0)
-    model.fit(X, y)
+    model.fit(X, y, feature_types=["continuous"] * P)
     nr = noise_report(model)
     assert nr["assessment"] in ("moderate", "noisy")
 
@@ -254,7 +255,7 @@ def test_validation_report_catch_noise_features():
     X = rng2.standard_normal((n_large, P))
     y = 8 * X[:, 3] - 6 * X[:, 4] + 4 * X[:, 5] + rng2.standard_normal(n_large) * 0.01
     model = GeoXGBRegressor(n_rounds=20, refit_interval=5, random_state=0)
-    model.fit(X, y)
+    model.fit(X, y, feature_types=["continuous"] * P)
 
     # Skip if HVRT returned an all-zero partition tree (trivial partition)
     imp_check = importance_report(model, FEATURE_NAMES)

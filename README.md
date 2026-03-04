@@ -16,13 +16,10 @@ For hyperparameter optimisation via Optuna:
 pip install "geoxgb[optimizer]"
 ```
 
-For Numba-accelerated HVRT kernels (recommended for large datasets):
+Requires `hvrt >= 2.6.1`, `scikit-learn`, and `numpy`. Python >= 3.10.
 
-```bash
-pip install "geoxgb[fast]"
-```
-
-Requires `hvrt >= 2.6.0`, `scikit-learn`, and `numpy`. Python >= 3.10.
+The compiled C++ backend is included in the wheel and used automatically;
+no extra install step required.
 
 ## Quick Start
 
@@ -356,29 +353,19 @@ deviation). HPO-best params are from a 2 000+ trial Optuna TPE study with
 > GeoXGB uses its default 1 000 rounds (`learning_rate=0.02`). Both are
 > untuned defaults evaluated with identical CV splits.
 
-### Numba acceleration (`geoxgb[fast]`)
+### C++ backend
 
-Installing `geoxgb[fast]` pulls in `hvrt[fast]`, which activates LLVM-compiled
-Numba kernels for the three HVRT operations GeoXGB hits on every refit cycle:
+GeoXGB ships a compiled C++ extension (`_geoxgb_cpp`) built with Eigen3 and
+pybind11.  `fit()` and `predict()` route through C++ automatically when:
 
-| HVRT operation | GeoXGB call site | Speedup (2.5.0 → 2.6.0) |
-|---|---|---|
-| `_centroid_fps_core_nb` | `HVRT.reduce()` — FPS selection | **10–19×** |
-| Epanechnikov sampler | `HVRT.expand()` — KDE synthesis | **5–8×** |
-| `_pairwise_target_nb` | `HVRT.fit()` — partition build | **1.1–1.4×** |
+- The compiled extension is present (always true for wheel installs), **and**
+- No `feature_types` argument is passed (categorical columns still use the
+  pure-Python path), **and**
+- `convergence_tol` is `None` (the Python path handles convergence tracking).
 
-Per-refit HVRT overhead drops **2–3× overall** (n=442–5000, p=10). End-to-end
-GeoXGB fit speedup is **1.2–1.4×** at n=1000–5000 (tree training still
-dominates), rising to higher multiples for workflows that do many HVRT refits
-relative to tree rounds. JIT compilation cost is paid once per install
-(`@njit(cache=True)`) — zero overhead per session or per call.
-
-Fallback to pure NumPy is automatic when Numba is absent; no API or behaviour
-change.
-
-See Section 21 of
-[`benchmarks/PERFORMANCE_REPORT.md`](benchmarks/PERFORMANCE_REPORT.md)
-for the full timing comparison (HVRT 2.5.0 vs 2.6.0 + Numba).
+The Python path remains available for the full interpretability stack
+(`noise_estimate()`, `sample_provenance()`, `partition_feature_importances()`,
+`Gardener`, etc.) — pass `feature_types=["continuous"] * n_features` to opt in.
 
 ## Causal Inference
 

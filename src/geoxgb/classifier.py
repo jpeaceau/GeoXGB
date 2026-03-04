@@ -193,6 +193,7 @@ class GeoXGBClassifier(_GeoXGBBase):
         # Multiclass state
         self._mc_trees = None       # list of K lists of trees
         self._mc_init_preds = None  # list of K init predictions
+        self._cpp_model = None      # CppGeoXGBClassifier or None
 
     def fit(self, X, y, feature_types=None):
         """
@@ -241,8 +242,20 @@ class GeoXGBClassifier(_GeoXGBBase):
             self._class_weights = None
 
         if self._n_classes == 2:
-            self._fit_binary(X, y_enc.astype(np.float64))
+            from geoxgb._cpp_backend import _CPP_AVAILABLE
+            if (_CPP_AVAILABLE and feature_types is None
+                    and self._class_weights is None and self.convergence_tol is None):
+                from geoxgb._cpp_backend import make_cpp_config, CppGeoXGBClassifier as _CppClf
+                params = {k: getattr(self, k) for k in self._PARAM_NAMES if hasattr(self, k)}
+                self._cpp_model = _CppClf(make_cpp_config(**params))
+                self._cpp_model.fit(X, y_enc.astype(np.float64))
+                cr = self._cpp_model.convergence_round()
+                self.convergence_round_ = None if cr < 0 else cr
+            else:
+                self._cpp_model = None
+                self._fit_binary(X, y_enc.astype(np.float64))
         else:
+            self._cpp_model = None
             self._fit_multiclass(X, y_enc)
 
         self._is_fitted = True
@@ -369,6 +382,8 @@ class GeoXGBClassifier(_GeoXGBBase):
         X = np.asarray(X, dtype=np.float64)
 
         if self._n_classes == 2:
+            if getattr(self, '_cpp_model', None) is not None:
+                return self._cpp_model.predict_proba(np.asarray(X, dtype=np.float64))
             raw = self._raw_predict(X)
             p1 = _sigmoid(raw)
             return np.column_stack([1 - p1, p1])
@@ -405,5 +420,8 @@ class GeoXGBClassifier(_GeoXGBBase):
     def n_trees(self):
         """Total number of weak learners across all classes."""
         if self._mc_trees is None:
+            if getattr(self, '_cpp_model', None) is not None:
+                cr = self.convergence_round_
+                return cr if cr is not None else self.n_rounds
             return len(self._trees)
         return sum(len(trees_k) for trees_k in self._mc_trees)

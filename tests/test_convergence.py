@@ -75,7 +75,7 @@ def test_convergence_losses_populated():
     X, y = _make_reg()
     m = GeoXGBRegressor(n_rounds=100, refit_interval=20,
                         convergence_tol=0.001, random_state=42)
-    m.fit(X, y)
+    m.fit(X, y)  # convergence_tol != None → Python path
     # At least initial + round-20 entry
     assert len(m._convergence_losses) >= 2
     # Losses should be positive
