@@ -343,16 +343,17 @@ Head-to-head comparison vs XGBoost (default vs default, same CV protocol):
 | friedman1 (n=1000) | R² | **0.9210** | **0.9321** | 0.8434 |
 | breast\_cancer (n=569) | AUC | **0.9943** | **0.9926** | 0.9886 |
 | wine (n=178, 3-class) | AUC | **0.9951** | **0.9993** | 0.9975 |
-| digits (n=1797, 10-class) | AUC | **0.9988** | — | — |
+| digits (n=1797, 10-class) | AUC | **0.9988** | 0.9987 | 0.9990 |
 
-GeoXGB default outperforms XGBoost default on all five evaluated datasets,
-**without any tuning**. HPO-best params are from a 2 000+ trial Optuna TPE
-study with `partitioner='pyramid_hart'`, `method='variance_ordered'`, and
-`generation_strategy='simplex_mixup'` fixed. Key regression findings: optimal
+GeoXGB default outperforms XGBoost on 4/5 datasets without any tuning. On
+digits (10-class), GeoXGB and XGBoost are within 0.0002 AUC (one standard
+deviation). HPO-best params are from a 2 000+ trial Optuna TPE study with
+`partitioner='pyramid_hart'`, `method='variance_ordered'`, and
+`generation_strategy='simplex_mixup'` fixed. Key findings: optimal
 `learning_rate` 0.012–0.015, `max_depth` 2–3, `y_weight` 0.21–0.28.
 
-> Note: XGBoost uses its default 300 estimators with `learning_rate=0.1`.
-> GeoXGB uses its default 1 000 rounds with `learning_rate=0.02`. Both are
+> Note: XGBoost uses its default 300 estimators (`learning_rate=0.1`).
+> GeoXGB uses its default 1 000 rounds (`learning_rate=0.02`). Both are
 > untuned defaults evaluated with identical CV splits.
 
 ### Numba acceleration (`geoxgb[fast]`)
