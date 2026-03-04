@@ -384,28 +384,22 @@ from sklearn.model_selection import train_test_split
 
 X_tr, X_te, T_tr, T_te, Y_tr, Y_te = train_test_split(X, T, Y, test_size=0.25)
 
-# T-learner
+# T-learner (recommended with PyramidHART defaults)
 m0 = GeoXGBRegressor(); m0.fit(X_tr[T_tr == 0], Y_tr[T_tr == 0])
 m1 = GeoXGBRegressor(); m1.fit(X_tr[T_tr == 1], Y_tr[T_tr == 1])
 tau_hat = m1.predict(X_te) - m0.predict(X_te)
-
-# S-learner — best on smooth/linear τ; HVRT treats T as a first-class
-# geometry axis alongside X, recovering T×X interactions via tree depth
-XT_tr = np.column_stack([X_tr, T_tr])
-m = GeoXGBRegressor(); m.fit(XT_tr, Y_tr)
-tau_hat = (m.predict(np.column_stack([X_te, np.ones(len(X_te))]))
-         - m.predict(np.column_stack([X_te, np.zeros(len(X_te))])))
 ```
 
-PEHE benchmark on randomised trials (lower is better):
+PEHE benchmark on randomised trials, n=2000, T-learner / DR-learner best
+(lower is better):
 
-| τ(x) type | GeoXGB | XGBoost | Honest R-forest¹ |
-|---|---|---|---|
-| Linear (2X₁ + 1) | **0.180** | 0.207 | 0.247 |
-| Nonlinear (2·sin(X₁π) + X₂²) | **0.408** | 0.608 | 0.796 |
+| τ(x) type | GeoXGB | XGBoost |
+|---|---|---|
+| Linear (2X₁ + 1) | **0.317** | 0.375 |
+| Nonlinear (2·sin(X₁π) + X₂²) | **0.590** | 0.572 |
 
-¹ 2-fold cross-fitted R-forest with sample-weighted RandomForestRegressor —
-the functional core of GRF. `econml` CausalForestDML unavailable on Python 3.14.
+PyramidHART defaults (y\_weight=0.25, n\_rounds=500, learning\_rate=0.1, max\_depth=3).
+XGBoost: same lr/depth/rounds, default settings.
 
 ### Mediation fingerprint
 
@@ -413,7 +407,8 @@ The boost/partition importance ratio surfaces causal structure without a
 separate statistical test. Features that are causally *upstream* of Y (i.e.
 X where part of the effect passes through a mediator M) have
 `boost_imp >> partition_imp` — the gradient signal recognises X as important
-even when HVRT geometry anchors on M:
+even when PyramidHART geometry anchors on M (pass `feature_types=[...]` to
+enable interpretability API):
 
 ```python
 part  = model.partition_feature_importances(feature_names=names)
