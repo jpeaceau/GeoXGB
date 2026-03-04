@@ -150,3 +150,129 @@ def test_noise_estimate_not_fitted():
     reg = GeoXGBRegressor()
     with pytest.raises(RuntimeError):
         reg.noise_estimate()
+
+
+# ---------------------------------------------------------------------------
+# 7. cooperation_matrix
+# ---------------------------------------------------------------------------
+
+def test_cooperation_matrix_shape():
+    reg = _fitted_model()
+    X_test = RNG.standard_normal((10, P))
+    result = reg.cooperation_matrix(X_test, FEATURE_NAMES)
+    assert result["matrices"].shape == (10, P, P)
+    assert result["global_matrix"].shape == (P, P)
+    assert result["feature_names"] == FEATURE_NAMES
+    assert result["partitioner"] == reg.partitioner
+
+
+def test_cooperation_matrix_diagonal_ones():
+    reg = _fitted_model()
+    X_test = RNG.standard_normal((20, P))
+    result = reg.cooperation_matrix(X_test)
+    mats = result["matrices"]
+    for s in range(len(X_test)):
+        diag = np.diag(mats[s])
+        np.testing.assert_allclose(diag, np.ones(P), atol=0.01,
+                                   err_msg=f"Diagonal not 1 at sample {s}")
+
+
+def test_cooperation_matrix_symmetric():
+    reg = _fitted_model()
+    X_test = RNG.standard_normal((15, P))
+    result = reg.cooperation_matrix(X_test)
+    mats = result["matrices"]
+    for s in range(len(X_test)):
+        diff = np.abs(mats[s] - mats[s].T).max()
+        assert diff < 1e-10, f"Matrix not symmetric at sample {s}, max diff={diff}"
+    glob = result["global_matrix"]
+    assert np.abs(glob - glob.T).max() < 1e-10, "Global matrix not symmetric"
+
+
+def test_cooperation_matrix_bounded():
+    reg = _fitted_model()
+    X_test = RNG.standard_normal((30, P))
+    result = reg.cooperation_matrix(X_test)
+    mats = result["matrices"]
+    assert mats.min() >= -1.0 - 1e-9
+    assert mats.max() <=  1.0 + 1e-9
+
+
+def test_cooperation_matrix_requires_python_path():
+    # C++ path: no feature_types → no hvrt_model with X_z_
+    from geoxgb._cpp_backend import _CPP_AVAILABLE
+    if not _CPP_AVAILABLE:
+        pytest.skip("C++ backend not available")
+    X = RNG.standard_normal((N, P))
+    y = RNG.standard_normal(N)
+    reg = GeoXGBRegressor(n_rounds=10, random_state=0)
+    reg.fit(X, y)   # no feature_types → C++ path
+    X_test = RNG.standard_normal((5, P))
+    with pytest.raises(RuntimeError):
+        reg.cooperation_matrix(X_test)
+
+
+# ---------------------------------------------------------------------------
+# 8. cooperation_score
+# ---------------------------------------------------------------------------
+
+def test_cooperation_score_shape():
+    reg = _fitted_model()
+    X_test = RNG.standard_normal((20, P))
+    scores = reg.cooperation_score(X_test)
+    assert scores.shape == (20,)
+
+
+def test_cooperation_score_pyramid_hart_nonpositive():
+    # PyramidHART: A = |S| - ||z||_1 <= 0
+    X = RNG.standard_normal((N, P))
+    y = 3 * X[:, 0] - 2 * X[:, 1] + RNG.standard_normal(N) * 0.1
+    reg = GeoXGBRegressor(
+        n_rounds=20, partitioner='pyramid_hart', random_state=0
+    )
+    reg.fit(X, y, feature_types=["continuous"] * P)
+    X_test = RNG.standard_normal((50, P))
+    scores = reg.cooperation_score(X_test)
+    assert scores.max() <= 1e-9, (
+        f"PyramidHART cooperation scores should be <= 0, got max={scores.max():.4f}"
+    )
+
+
+def test_cooperation_score_hvrt_signed():
+    # HVRT: T can be positive or negative
+    X = RNG.standard_normal((N, P))
+    y = 3 * X[:, 0] - 2 * X[:, 1] + RNG.standard_normal(N) * 0.1
+    reg = GeoXGBRegressor(
+        n_rounds=20, partitioner='hvrt', random_state=0
+    )
+    reg.fit(X, y, feature_types=["continuous"] * P)
+    X_test = RNG.standard_normal((50, P))
+    scores = reg.cooperation_score(X_test)
+    # HVRT scores can be positive or negative — just check shape
+    assert scores.shape == (50,)
+
+
+# ---------------------------------------------------------------------------
+# 9. cooperation_tensor
+# ---------------------------------------------------------------------------
+
+def test_cooperation_tensor_shape():
+    reg = _fitted_model()
+    X_test = RNG.standard_normal((8, P))
+    result = reg.cooperation_tensor(X_test, FEATURE_NAMES)
+    assert result["tensor"].shape == (8, P, P, P)
+    assert result["global_tensor"].shape == (P, P, P)
+    assert result["feature_names"] == FEATURE_NAMES
+
+
+def test_cooperation_tensor_symmetry():
+    # T[s, i, j, k] should equal T[s, j, i, k] = T[s, i, k, j] (all permutations)
+    reg = _fitted_model()
+    X_test = RNG.standard_normal((5, P))
+    result = reg.cooperation_tensor(X_test)
+    T = result["tensor"]
+    for s in range(len(X_test)):
+        np.testing.assert_allclose(T[s], T[s].transpose(1, 0, 2), atol=1e-10,
+                                   err_msg=f"Tensor not sym in (i,j) at s={s}")
+        np.testing.assert_allclose(T[s], T[s].transpose(0, 2, 1), atol=1e-10,
+                                   err_msg=f"Tensor not sym in (j,k) at s={s}")

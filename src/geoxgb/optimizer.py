@@ -82,11 +82,6 @@ class GeoXGBOptimizer:
         Seed for both Optuna's TPE sampler and GeoXGB's random_state.
     verbose : bool, default=False
         If True, show Optuna trial-level progress logs.
-    fast : bool, default=False
-        If True, inject speed-up overrides into every trial:
-        ``cache_geometry=True``, ``auto_expand=False``,
-        ``convergence_tol=0.01``.  Reduces per-trial cost at the expense
-        of slightly noisier scores.
 
     Attributes (set after .fit())
     ------------------------------
@@ -171,13 +166,8 @@ class GeoXGBOptimizer:
         "class_weight":   [None, "balanced"],
     }
 
-    # ------------------------------------------------------------------
-    # Speed-up overrides applied when fast=True (both tasks)
-    # ------------------------------------------------------------------
-
-    _FAST_TRIAL_PARAMS = {
-        "cache_geometry":  True,
-        "auto_expand":     False,
+    # convergence_tol applied to every trial to enable early stopping
+    _TRIAL_DEFAULTS = {
         "convergence_tol": 0.01,
     }
 
@@ -189,7 +179,6 @@ class GeoXGBOptimizer:
         n_jobs=1,
         random_state=42,
         verbose=False,
-        fast=False,
     ):
         self.task = task
         self.n_trials = n_trials
@@ -197,7 +186,6 @@ class GeoXGBOptimizer:
         self.n_jobs = n_jobs
         self.random_state = random_state
         self.verbose = verbose
-        self.fast = fast
 
     # ------------------------------------------------------------------
     # Public API
@@ -258,8 +246,6 @@ class GeoXGBOptimizer:
         _rs          = self.random_state
         _space       = search_space
 
-        _fast_params = self._FAST_TRIAL_PARAMS if self.fast else {}
-
         def objective(trial):
             params = {
                 name: trial.suggest_categorical(name, choices)
@@ -268,8 +254,8 @@ class GeoXGBOptimizer:
             run_params = {
                 **params,
                 "random_state": _rs,
-                **_fast_params,  # speed-up overrides
-                **_fixed,        # user-supplied overrides last
+                **self._TRIAL_DEFAULTS,  # convergence_tol always enabled
+                **_fixed,                # user-supplied overrides last
             }
             fold_scores = []
             with warnings.catch_warnings():
@@ -348,8 +334,7 @@ class GeoXGBOptimizer:
     def __repr__(self):
         fitted = hasattr(self, "best_model_")
         s = f"fitted, best_score={self.best_score_:.4f}" if fitted else "unfitted"
-        fast_str = ", fast=True" if self.fast else ""
         return (
             f"GeoXGBOptimizer({s}, n_trials={self.n_trials}, "
-            f"cv={self.cv}, task={getattr(self, 'task_', self.task)}{fast_str})"
+            f"cv={self.cv}, task={getattr(self, 'task_', self.task)})"
         )

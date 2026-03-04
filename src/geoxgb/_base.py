@@ -31,7 +31,7 @@ class _GeoXGBBase:
         "reduce_ratio", "expand_ratio",
         "y_weight", "method", "variance_weighted", "bandwidth", "refit_interval",
         "auto_noise", "auto_expand", "min_train_samples", "random_state",
-        "cache_geometry", "lr_schedule", "tree_criterion", "n_jobs",
+        "lr_schedule", "tree_criterion", "n_jobs",
         "generation_strategy", "adaptive_bandwidth", "convergence_tol",
         "feature_weights", "assignment_strategy", "tree_splitter",
         "refit_noise_floor", "noise_guard", "hvrt_params", "hvrt_tree_splitter",
@@ -62,7 +62,6 @@ class _GeoXGBBase:
         auto_expand=True,
         min_train_samples=5000,
         random_state=42,
-        cache_geometry=False,
         lr_schedule=None,
         tree_criterion="squared_error",
         n_jobs=1,
@@ -98,7 +97,6 @@ class _GeoXGBBase:
         self.auto_expand = auto_expand
         self.min_train_samples = min_train_samples
         self.random_state = random_state
-        self.cache_geometry = cache_geometry
         self.lr_schedule = lr_schedule
         self.tree_criterion = tree_criterion
         self.n_jobs = n_jobs
@@ -268,8 +266,7 @@ class _GeoXGBBase:
         self._train_n_resampled = len(Xr)
         self._record_resample(0, res)
 
-        # Cache HVRT geometry after the initial fit (reused at every refit interval)
-        self._hvrt_cache = res.hvrt_model if self.cache_geometry else None
+        self._hvrt_cache = None  # geometry always refreshed at each refit interval
 
         self._init_pred = self._compute_init_prediction(yr)
         preds = np.full(len(Xr), self._init_pred)
@@ -538,6 +535,315 @@ class _GeoXGBBase:
         """
         self._check_fitted()
         return self._resample_history[0]["noise_modulation"]
+
+    def cooperation_matrix(self, X, feature_names=None):
+        """
+        Per-prediction local feature cooperation matrix.
+
+        For each row of X, identifies which training partition it belongs to
+        (using the most recent partition geometry) and computes the Pearson
+        correlation of z-scores between every pair of features within that
+        partition.
+
+        A positive entry C[s, i, j] means features *i* and *j* tend to move
+        in the same direction in z-space around sample *s* (cooperative). A
+        negative entry means they tend to move in opposite directions
+        (competitive). The diagonal is always 1.
+
+        This is a strictly *local* quantity — the same pair of features may
+        cooperate in one region of feature space and compete in another.
+        SHAP interaction values and EBM pairwise terms are global averages;
+        this matrix varies per prediction.
+
+        Requires a Python-path fit: pass ``feature_types`` to ``fit()``.  The
+        model must not have been loaded via ``load()`` (which strips ``X_z_``
+        to reduce file size).
+
+        Parameters
+        ----------
+        X : array-like of shape (n_samples, n_features)
+            Points at which to evaluate local cooperation.
+        feature_names : list of str, optional
+            Defaults to ``['x0', 'x1', ...]``.
+
+        Returns
+        -------
+        dict with keys:
+
+        ``'matrices'`` : ndarray, shape (n_samples, n_features, n_features)
+            C[s, i, j] = Pearson corr(z_i, z_j) within sample *s*'s
+            partition. Positive = cooperative. Negative = competitive.
+
+        ``'global_matrix'`` : ndarray, shape (n_features, n_features)
+            Partition-size-weighted average across all training partitions.
+            Summarises the cooperation geometry over the full training set.
+
+        ``'feature_names'`` : list of str
+
+        ``'partitioner'`` : str — partitioner used to build the geometry.
+
+        Raises
+        ------
+        RuntimeError
+            If fitted via C++ path or if the model was saved/loaded (``X_z_``
+            stripped).
+        """
+        self._check_fitted()
+        if not self._resample_history:
+            raise RuntimeError(
+                "cooperation_matrix() requires a Python-path fit. "
+                "Pass feature_types=[...] to fit() to use the Python backend."
+            )
+        last = self._resample_history[-1]
+        hvrt_model = last["hvrt_model"]
+        if (hvrt_model is None
+                or not hasattr(hvrt_model, 'X_z_')
+                or hvrt_model.X_z_ is None):
+            raise RuntimeError(
+                "cooperation_matrix() requires a Python-path fit with geometry "
+                "intact. Pass feature_types=[...] to fit(), and do not call "
+                "save()/load() first (save() strips X_z_ to reduce file size)."
+            )
+
+        X = np.asarray(X, dtype=np.float64)
+        d = self._n_features
+        if feature_names is None:
+            feature_names = [f"x{i}" for i in range(d)]
+
+        X_z_train = hvrt_model.X_z_          # (n_train, d)
+        part_ids  = hvrt_model.partition_ids_ # (n_train,)
+
+        # Map test points to z-space and find their partition leaf
+        X_test_z  = hvrt_model._to_z(X)      # (n_test, d)
+        test_leaves = hvrt_model.tree_.apply(
+            X_test_z.astype(np.float32)
+        )                                     # (n_test,) — sklearn leaf node IDs
+
+        def _pearson_corr(Z_p):
+            """Pearson correlation matrix of rows of Z_p."""
+            m = len(Z_p)
+            if m < 2:
+                return np.eye(d)
+            Z_c = Z_p - Z_p.mean(axis=0, keepdims=True)
+            std = Z_c.std(axis=0)
+            std[std < 1e-10] = 1.0
+            Z_n = Z_c / std
+            return (Z_n.T @ Z_n) / m
+
+        # Cache per-leaf result (many test points may share a partition)
+        unique_test_leaves = np.unique(test_leaves)
+        leaf_to_corr = {}
+        for leaf in unique_test_leaves:
+            mask = part_ids == leaf
+            leaf_to_corr[leaf] = _pearson_corr(X_z_train[mask])
+
+        n_test = len(X)
+        matrices = np.empty((n_test, d, d))
+        for s in range(n_test):
+            matrices[s] = leaf_to_corr[test_leaves[s]]
+
+        # Global: training-partition-size-weighted average
+        global_C  = np.zeros((d, d))
+        total_w   = 0.0
+        for leaf in hvrt_model.unique_partitions_:
+            mask = part_ids == leaf
+            w    = float(mask.sum())
+            if w < 2:
+                continue
+            global_C += w * _pearson_corr(X_z_train[mask])
+            total_w  += w
+        if total_w > 0:
+            global_C /= total_w
+
+        return {
+            "matrices":      matrices,
+            "global_matrix": global_C,
+            "feature_names": list(feature_names),
+            "partitioner":   self.partitioner,
+        }
+
+    def cooperation_score(self, X):
+        """
+        Per-prediction partitioner cooperation score.
+
+        Applies the architecture-native cooperation formula to each row of X
+        in the z-score space of the most recent partition geometry.
+
+        +-------------------+--------------------------------------------+---------+
+        | Partitioner       | Formula                                    | Range   |
+        +===================+============================================+=========+
+        | ``hvrt``          | T = 0.5·(S² − ‖z‖₂²) = Σᵢ<ⱼ zᵢzⱼ       | (−∞,+∞) |
+        +-------------------+--------------------------------------------+---------+
+        | ``hart``          | T = 0.5·(‖z‖₁² − ‖z‖₂²) = Σᵢ<ⱼ|zᵢ|·|zⱼ|| [0,+∞)  |
+        +-------------------+--------------------------------------------+---------+
+        | ``fasthvrt``      | T = ‖z‖₁ (L1 radius)                      | [0,+∞)  |
+        +-------------------+--------------------------------------------+---------+
+        | ``pyramid_hart``  | A = |S| − ‖z‖₁ ≤ 0                        |[−r√d, 0]|
+        +-------------------+--------------------------------------------+---------+
+
+        where S = Σᵢ zᵢ.  Higher magnitude generally indicates the sample
+        sits in a region of higher geometric complexity (features cooperating
+        or competing strongly).
+
+        Requires a Python-path fit: pass ``feature_types`` to ``fit()``.
+
+        Parameters
+        ----------
+        X : array-like of shape (n_samples, n_features)
+
+        Returns
+        -------
+        ndarray, shape (n_samples,)
+            Cooperation score per prediction.
+        """
+        self._check_fitted()
+        if not self._resample_history:
+            raise RuntimeError(
+                "cooperation_score() requires a Python-path fit. "
+                "Pass feature_types=[...] to fit() to use the Python backend."
+            )
+        last = self._resample_history[-1]
+        hvrt_model = last["hvrt_model"]
+        if hvrt_model is None or not hasattr(hvrt_model, '_to_z'):
+            raise RuntimeError(
+                "cooperation_score() requires a Python-path fit. "
+                "Pass feature_types=[...] to fit()."
+            )
+
+        X   = np.asarray(X, dtype=np.float64)
+        X_z = hvrt_model._to_z(X)     # (n, d)
+
+        p = self.partitioner
+        if p == 'pyramid_hart':
+            S  = X_z.sum(axis=1)
+            l1 = np.abs(X_z).sum(axis=1)
+            return np.abs(S) - l1              # ≤ 0; 0 iff all features same sign
+        if p == 'hart':
+            abs_z = np.abs(X_z)
+            l1    = abs_z.sum(axis=1)
+            l2sq  = (X_z * X_z).sum(axis=1)
+            return 0.5 * (l1 * l1 - l2sq)     # = Σᵢ<ⱼ |zᵢ||zⱼ| ≥ 0
+        if p in ('fasthvrt', 'fasthart'):
+            return np.abs(X_z).sum(axis=1)    # L1 radius ≥ 0
+        # Default: HVRT signed cooperation
+        S    = X_z.sum(axis=1)
+        l2sq = (X_z * X_z).sum(axis=1)
+        return 0.5 * (S * S - l2sq)           # = Σᵢ<ⱼ zᵢzⱼ
+
+    def cooperation_tensor(self, X, feature_names=None):
+        """
+        Per-prediction three-way feature cooperation tensor.
+
+        For each row of X and every feature triple (i, j, k), computes the
+        mean product of z-scores within the prediction's local partition:
+
+            T[s, i, j, k] = E[z_i · z_j · z_k]  (within partition of sample s)
+
+        Interpretation
+        --------------
+        * **T[s, i, j, k]** with i ≠ j ≠ k: how does feature *k* modulate the
+          cooperation of features *i* and *j*?  Positive means that when *k*
+          is above its local median, *i* and *j* tend to cooperate; negative
+          means *k*'s presence pushes *i* and *j* to compete.
+        * **T[s, i, j, i]**: how does feature *i* itself modulate the pairwise
+          cooperation of *i* and *j* — skewness contribution.
+        * **T[s, i, i, i]**: third central moment (skewness) of feature *i*
+          in the local partition.
+
+        This is the natural three-way extension of the cooperation matrix.
+        Neither SHAP interaction values nor EBM pairwise terms expose
+        three-way structure; this tensor does.
+
+        Requires a Python-path fit: pass ``feature_types`` to ``fit()``.
+
+        Parameters
+        ----------
+        X : array-like of shape (n_samples, n_features)
+        feature_names : list of str, optional
+            Defaults to ``['x0', 'x1', ...]``.
+
+        Returns
+        -------
+        dict with keys:
+
+        ``'tensor'`` : ndarray, shape (n_samples, d, d, d)
+            T[s, i, j, k] = E[z_i · z_j · z_k] within sample s's partition.
+
+        ``'global_tensor'`` : ndarray, shape (d, d, d)
+            Partition-size-weighted average over all training partitions.
+
+        ``'feature_names'`` : list of str
+
+        ``'partitioner'`` : str
+        """
+        self._check_fitted()
+        if not self._resample_history:
+            raise RuntimeError(
+                "cooperation_tensor() requires a Python-path fit. "
+                "Pass feature_types=[...] to fit() to use the Python backend."
+            )
+        last = self._resample_history[-1]
+        hvrt_model = last["hvrt_model"]
+        if (hvrt_model is None
+                or not hasattr(hvrt_model, 'X_z_')
+                or hvrt_model.X_z_ is None):
+            raise RuntimeError(
+                "cooperation_tensor() requires a Python-path fit with geometry "
+                "intact. Pass feature_types=[...] to fit(), and do not use "
+                "save()/load()."
+            )
+
+        X = np.asarray(X, dtype=np.float64)
+        d = self._n_features
+        if feature_names is None:
+            feature_names = [f"x{i}" for i in range(d)]
+
+        X_z_train = hvrt_model.X_z_          # (n_train, d)
+        part_ids  = hvrt_model.partition_ids_ # (n_train,)
+
+        X_test_z  = hvrt_model._to_z(X)
+        test_leaves = hvrt_model.tree_.apply(
+            X_test_z.astype(np.float32)
+        )
+
+        def _triple_moment(Z_p):
+            """E[z_i * z_j * z_k] — shape (d, d, d)."""
+            m = len(Z_p)
+            if m < 2:
+                return np.zeros((d, d, d))
+            # np.einsum 'si,sj,sk->ijk' / m
+            return np.einsum('si,sj,sk->ijk', Z_p, Z_p, Z_p) / m
+
+        unique_test_leaves = np.unique(test_leaves)
+        leaf_to_tensor = {}
+        for leaf in unique_test_leaves:
+            mask = part_ids == leaf
+            leaf_to_tensor[leaf] = _triple_moment(X_z_train[mask])
+
+        n_test = len(X)
+        tensors = np.empty((n_test, d, d, d))
+        for s in range(n_test):
+            tensors[s] = leaf_to_tensor[test_leaves[s]]
+
+        # Global: training-partition-size-weighted average
+        global_T = np.zeros((d, d, d))
+        total_w  = 0.0
+        for leaf in hvrt_model.unique_partitions_:
+            mask = part_ids == leaf
+            w    = float(mask.sum())
+            if w < 2:
+                continue
+            global_T += w * _triple_moment(X_z_train[mask])
+            total_w  += w
+        if total_w > 0:
+            global_T /= total_w
+
+        return {
+            "tensor":        tensors,
+            "global_tensor": global_T,
+            "feature_names": list(feature_names),
+            "partitioner":   self.partitioner,
+        }
 
     # ------------------------------------------------------------------
     # Properties
