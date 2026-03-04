@@ -3,6 +3,7 @@
 #include "hvrt/types.h"
 #include "hvrt/hvrt.h"
 #include "hvrt/target.h"
+#include "hvrt/reduce.h"
 #include <algorithm>
 #include <numeric>
 #include <stdexcept>
@@ -249,6 +250,28 @@ GeoXGBBase::ResampleResult GeoXGBBase::do_resample(
         hcfg.bandwidth = "auto";
     }
 
+    // Partitioner type
+    if      (cfg_.partitioner == "hart")
+        hcfg.partitioner_type = hvrt::PartitionerType::HART;
+    else if (cfg_.partitioner == "fasthvrt" || cfg_.partitioner == "fasthart")
+        hcfg.partitioner_type = hvrt::PartitionerType::FastHART;
+    else if (cfg_.partitioner == "pyramid_hart")
+        hcfg.partitioner_type = hvrt::PartitionerType::PyramidHART;
+    else
+        hcfg.partitioner_type = hvrt::PartitionerType::HVRT;
+
+    // Generation strategy enum (used by expander_.prepare() inside HVRT::fit/refit)
+    {
+        const std::string& gs = cfg_.generation_strategy;
+        if      (gs == "simplex_mixup"    || gs == "SimplexMixup")    hcfg.gen_strategy = hvrt::GenerationStrategy::SimplexMixup;
+        else if (gs == "laplace"          || gs == "Laplace")         hcfg.gen_strategy = hvrt::GenerationStrategy::Laplace;
+        else if (gs == "multivariate_kde" || gs == "MultivariateKDE") hcfg.gen_strategy = hvrt::GenerationStrategy::MultivariateKDE;
+        else if (gs == "bootstrap"        || gs == "BootstrapNoise")  hcfg.gen_strategy = hvrt::GenerationStrategy::BootstrapNoise;
+        else if (gs == "copula"           || gs == "UnivariateCopula") hcfg.gen_strategy = hvrt::GenerationStrategy::UnivariateCopula;
+        else if (gs == "auto"             || gs == "Auto")             hcfg.gen_strategy = hvrt::GenerationStrategy::Auto;
+        else                                                            hcfg.gen_strategy = hvrt::GenerationStrategy::Epanechnikov;
+    }
+
     std::shared_ptr<hvrt::HVRT> h;
     if (hvrt_out && hvrt_out->fitted()) {
         // Fast refit: skip whitening, binning, geometry target — only re-run tree + expander.
@@ -339,9 +362,32 @@ GeoXGBBase::ResampleResult GeoXGBBase::do_resample(
 
     int n_keep = std::max(10, static_cast<int>(n * eff_reduce));
 
-    // Reduce: variance_ordered FPS
-    std::vector<int> red_idx_vec = h->reduce_indices(n_keep, std::nullopt,
-                                                      "variance", cfg_.variance_weighted);
+    // Adaptive reduce ratio: heavy-tailed gradients → increase reduce_ratio
+    if (cfg_.adaptive_reduce_ratio && n > 10) {
+        std::vector<double> sv(y_signal.data(), y_signal.data() + n);
+        std::transform(sv.begin(), sv.end(), sv.begin(),
+                       [](double v) { return std::abs(v); });
+        int med_pos = n / 2;
+        int p90_pos = static_cast<int>(n * 0.9);
+        std::nth_element(sv.begin(), sv.begin() + med_pos, sv.end());
+        double med_y = sv[med_pos];
+        std::nth_element(sv.begin(), sv.begin() + p90_pos, sv.end());
+        double p90_y   = sv[p90_pos];
+        double tail_ratio  = p90_y / (med_y + 1e-12);
+        double adapt_delta = std::clamp((tail_ratio - 1.5) / 20.0, 0.0, 0.15);
+        eff_reduce = std::min(eff_reduce + adapt_delta, 1.0);
+        n_keep = std::max(10, static_cast<int>(n * eff_reduce));
+    }
+
+    // Reduce: dispatch on reduce_method
+    std::vector<int> red_idx_vec;
+    if (cfg_.reduce_method == "orthant_stratified") {
+        red_idx_vec = hvrt::orthant_stratified(
+            h->X_z(), y_signal, n_keep, cfg_.random_state + seed_offset);
+    } else {
+        const std::string& rm = cfg_.reduce_method.empty() ? "variance" : cfg_.reduce_method;
+        red_idx_vec = h->reduce_indices(n_keep, std::nullopt, rm, cfg_.variance_weighted);
+    }
     Eigen::VectorXi red_idx = Eigen::Map<Eigen::VectorXi>(
         red_idx_vec.data(), static_cast<int>(red_idx_vec.size()));
 
@@ -407,7 +453,11 @@ GeoXGBBase::ResampleResult GeoXGBBase::do_resample(
         }
     };
 
-    // Auto-expand: fill up to min_train_samples using Epanechnikov KDE
+    // Active generation strategy string (used in h->expand() calls below)
+    const std::string& gs = cfg_.generation_strategy.empty()
+                            ? "epanechnikov" : cfg_.generation_strategy;
+
+    // Auto-expand: fill up to min_train_samples
     bool expansion_risk = cfg_.auto_expand && (n < cfg_.min_train_samples);
     if (expansion_risk && cfg_.expand_ratio == 0.0 && n_red < cfg_.min_train_samples) {
         int _eff_min = std::min(cfg_.min_train_samples,
@@ -417,7 +467,7 @@ GeoXGBBase::ResampleResult GeoXGBBase::do_resample(
 
         if (n_expand > 0) {
             Eigen::MatrixXd X_syn = h->expand(n_expand, cfg_.variance_weighted,
-                                               std::nullopt, "epanechnikov");
+                                               std::nullopt, gs);
             // Actual generated count may differ from requested (e.g. tiny partitions).
             n_expand = static_cast<int>(X_syn.rows());
 
@@ -467,7 +517,7 @@ GeoXGBBase::ResampleResult GeoXGBBase::do_resample(
         int n_expand = std::max(0, static_cast<int>(n * cfg_.expand_ratio * eff_noise));
         if (n_expand > 0) {
             Eigen::MatrixXd X_syn = h->expand(n_expand, cfg_.variance_weighted,
-                                               std::nullopt, "epanechnikov");
+                                               std::nullopt, gs);
             n_expand = static_cast<int>(X_syn.rows()); // actual generated count
 
             if (n_expand > 0) {

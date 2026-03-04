@@ -73,6 +73,16 @@ struct GeoXGBConfig {
     // GBT tree binning (separate from HVRT partition tree binning)
     int    n_bins             = 64;
 
+    // Geometry / resampling strategy dispatch
+    // "hvrt"|"hart"|"fasthvrt"|"fasthart"|"pyramid_hart"
+    std::string partitioner           = "hvrt";
+    // "variance"|"orthant_stratified"|"centroid_fps"|"medoid_fps"|"stratified"
+    std::string reduce_method         = "variance";
+    // "epanechnikov"|"simplex_mixup"|"laplace"|"multivariate_kde"|"copula"|"bootstrap"
+    std::string generation_strategy   = "epanechnikov";
+    // Adaptive reduce ratio: increase reduce_ratio for heavy-tailed gradient distributions
+    bool        adaptive_reduce_ratio = false;
+
     // Misc
     int    random_state       = 42;
     bool   variance_weighted  = true;

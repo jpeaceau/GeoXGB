@@ -60,6 +60,10 @@ _PYTHON_TO_CPP = {
     "residual_correct_lambda":   "residual_correct_lambda",
     "hvrt_min_samples_leaf": "hvrt_min_samples_leaf",
     "n_partitions":          "hvrt_n_partitions",
+    "partitioner":           "partitioner",
+    "method":                "reduce_method",
+    "generation_strategy":   "generation_strategy",
+    "adaptive_reduce_ratio": "adaptive_reduce_ratio",
 }
 
 

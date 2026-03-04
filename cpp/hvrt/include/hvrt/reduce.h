@@ -46,6 +46,17 @@ std::vector<int> variance_ordered(const Eigen::MatrixXd& X_part, int budget, int
 std::vector<int> stratified_select(const Eigen::MatrixXd& X_part, int budget,
                                    uint64_t rng_seed);
 
+// ── Orthant-stratified reduction ─────────────────────────────────────────────
+// Groups samples by sign(X_z − median_z) orthant, allocates budget proportional
+// to size·MAD(y) per orthant, then selects within each orthant by L1-distance
+// from the orthant centroid at linearly-spaced positions (farthest-first order).
+// Requires y — call directly from do_resample, not via HVRT::reduce_indices().
+std::vector<int> orthant_stratified(
+    const Eigen::MatrixXd& X_z,
+    const Eigen::VectorXd& y,
+    int n_target,
+    int random_state);
+
 // ── Top-level reduction ───────────────────────────────────────────────────────
 
 // Reduce X_z to n_target samples using specified method.

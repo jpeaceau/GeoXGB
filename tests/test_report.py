@@ -129,7 +129,7 @@ def test_noise_report_noisy_data():
     rng2 = np.random.default_rng(42)
     X = rng2.standard_normal((600, P))
     y = 3 * X[:, 0] - 2 * X[:, 1] + rng2.standard_normal(600) * 30.0
-    model = GeoXGBRegressor(n_rounds=20, refit_interval=5, random_state=0)
+    model = GeoXGBRegressor(n_rounds=20, refit_interval=5, auto_noise=True, random_state=0)
     model.fit(X, y)
     nr = noise_report(model)
     assert nr["assessment"] in ("moderate", "noisy")

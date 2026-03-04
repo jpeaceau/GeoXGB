@@ -130,7 +130,7 @@ def test_sample_provenance_with_expansion():
 def test_noise_estimate_clean():
     X = RNG.standard_normal((300, 5))
     y = 3 * X[:, 0] - 2 * X[:, 1] + RNG.standard_normal(300) * 0.05
-    reg = GeoXGBRegressor(n_rounds=10, random_state=0)
+    reg = GeoXGBRegressor(n_rounds=10, refit_interval=5, auto_noise=True, random_state=0)
     reg.fit(X, y)
     ne = reg.noise_estimate()
     assert 0.0 <= ne <= 1.0
@@ -139,7 +139,7 @@ def test_noise_estimate_clean():
 def test_noise_estimate_noisy():
     X = RNG.standard_normal((300, 5))
     y = 3 * X[:, 0] - 2 * X[:, 1] + RNG.standard_normal(300) * 20.0
-    reg = GeoXGBRegressor(n_rounds=10, random_state=0)
+    reg = GeoXGBRegressor(n_rounds=10, refit_interval=5, auto_noise=True, random_state=0)
     reg.fit(X, y)
     ne = reg.noise_estimate()
     assert 0.0 <= ne <= 1.0

@@ -15,6 +15,14 @@ Eigen::VectorXd compute_pairwise_target(const Eigen::MatrixXd& X_z);
 // Computes z-score of each row sum.
 Eigen::VectorXd compute_sum_target(const Eigen::MatrixXd& X_z);
 
+// HART target: absolute pairwise cooperation O(n·d).
+// T = 0.5*(||z||_1² − ||z||_2²) = Σ_{i<j} |z_i|·|z_j|
+Eigen::VectorXd compute_hart_target(const Eigen::MatrixXd& X_z);
+
+// PyramidHART target: axis-aligned polyhedral level sets O(n·d).
+// A = |Σ z_i| − ||z||_1  (always ≤ 0; exactly 0 on orthant boundaries)
+Eigen::VectorXd compute_pyramid_target(const Eigen::MatrixXd& X_z);
+
 // Blend X-derived composite target with external y.
 // y_component = zscore(|y_norm - median(y_norm)|)
 // result = zscore(x_comp) blended with y_comp via y_weight.

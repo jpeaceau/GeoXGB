@@ -111,6 +111,7 @@ OAT_FIELDS = [
     "phase", "dataset", "n_samples", "n_features", "noise_sigma", "r2_ceiling",
     "param", "value", "seed", "fold",
     "val_r2", "val_r2_adj", "val_rmse", "val_mae",
+    "val_nmae", "val_skill_adj", "val_mad_skill",
     "train_time_s", "convergence_round", "last_noise_mod",
     "config_json", "status",
 ]
@@ -119,6 +120,7 @@ PAIR_FIELDS = [
     "dataset", "n_samples", "n_features", "noise_sigma", "r2_ceiling",
     "param1", "val1", "param2", "val2", "seed", "fold",
     "val_r2", "val_r2_adj", "val_rmse", "val_mae",
+    "val_nmae", "val_skill_adj", "val_mad_skill",
     "train_time_s", "config_json", "status",
 ]
 
@@ -243,9 +245,51 @@ def _worker(task: dict) -> dict:
         val_mae  = float(np.mean(np.abs(y_pred - y_val)))
         conv_r   = int(model.convergence_round())
         noise_m  = float(model.last_noise_modulation())
+
+        # Noise-corrected NMAE skill: primary deployment metric.
+        # Datasets are z-score normalised so std(y_train) ≈ 1.0.
+        # nmae_base: naive MAE (predict training mean) / std(y_train).
+        # nmae_floor: irreducible MAE in normalised units.
+        #   noise_sigma is in RAW units; after normalisation
+        #   sigma_norm = sqrt(1 - r2_ceiling)  [exact for Gaussian noise].
+        #   MAE_floor_norm = sigma_norm * sqrt(2/pi).
+        _std_tr    = float(np.std(y[train_idx])) + 1e-9
+        _mae_base  = float(np.mean(np.abs(y_val - y[train_idx].mean())))
+        val_nmae   = val_mae / _std_tr
+        _nmae_base = _mae_base / _std_tr
+        _r2_ceil   = task.get("r2_ceiling", 1.0)
+        _sigma_norm = float(np.sqrt(max(1.0 - _r2_ceil, 0.0)))
+        _nmae_floor = _sigma_norm * np.sqrt(2.0 / np.pi) / _std_tr
+        _denom = _nmae_base - _nmae_floor
+        val_skill_adj = (float((_nmae_base - val_nmae) / (_denom + 1e-9))
+                         if _denom > 1e-6 else float("nan"))
+
+        # MAD-skill (noise-floor corrected): compare against predict-median baseline.
+        # Structurally identical to val_skill_adj but uses the median predictor
+        # instead of the mean predictor as the naive baseline.
+        #
+        #   val_mad_skill = (MAE_median_pred - MAE_model) / (MAE_median_pred - MAE_floor)
+        #
+        # MAE_floor (irreducible) is the same absolute floor used in val_skill_adj:
+        #   MAE_floor = sigma_noise * sqrt(2/pi)  where sigma_noise = sigma_norm * std(y)
+        #
+        # Why the median predictor?
+        #   median(y_train) is the Bayes-optimal constant predictor under L1 loss.
+        #   The mean predictor minimises MSE; using it as baseline for an MAE metric
+        #   is inconsistent.  On skewed / heavy-tailed targets the median predictor
+        #   is substantially harder to beat, giving a more honest skill score.
+        #
+        # Range: (-inf, 1].  1 = perfect; 0 = same as predict-median; <0 = worse.
+        _med_tr       = float(np.median(y[train_idx]))
+        _mad_base     = float(np.mean(np.abs(y_val - _med_tr)))
+        _mae_floor    = _sigma_norm * float(np.sqrt(2.0 / np.pi)) * _std_tr
+        _mad_denom    = _mad_base - _mae_floor
+        val_mad_skill = (float((_mad_base - val_mae) / (_mad_denom + 1e-9))
+                         if _mad_denom > 1e-6 else float("nan"))
         status   = "ok"
     except Exception as exc:
         val_r2 = val_r2_adj = val_rmse = val_mae = float("nan")
+        val_nmae = val_skill_adj = val_mad_skill = float("nan")
         conv_r = -1
         noise_m = float("nan")
         status = repr(exc)[:160]
@@ -269,6 +313,9 @@ def _worker(task: dict) -> dict:
         val_r2_adj         = val_r2_adj,
         val_rmse           = val_rmse,
         val_mae            = val_mae,
+        val_nmae           = val_nmae,
+        val_skill_adj      = val_skill_adj,
+        val_mad_skill      = val_mad_skill,
         train_time_s       = train_t,
         convergence_round  = conv_r,
         last_noise_mod     = noise_m,
@@ -483,10 +530,15 @@ def run_phase4(pool: mp.Pool, datasets: dict) -> None:
 
 # ── Phase 3: Auto-edge extension ──────────────────────────────────────────────
 
-def _best_value_per_param(csv_path: str) -> dict[str, object]:
+def _best_value_per_param(csv_path: str,
+                          metric: str = "val_skill_adj") -> dict[str, object]:
     """
-    Read an OAT CSV, compute mean R²_adj per (param, value) across all
+    Read an OAT CSV, compute mean <metric> per (param, value) across all
     datasets and seeds, return {param: best_value}.
+
+    metric choices:
+      "val_skill_adj"  -- NMAE-skill (noise-floor corrected, mean-predictor baseline)
+      "val_mad_skill"  -- MAD-skill  (median-predictor baseline, tail-robust)
     """
     if not os.path.exists(csv_path):
         return {}
@@ -497,7 +549,7 @@ def _best_value_per_param(csv_path: str) -> dict[str, object]:
             if r.get("status") != "ok":
                 continue
             try:
-                v = float(r["val_r2_adj"])
+                v = float(r[metric])
                 if not np.isnan(v):
                     # Try to parse value back to original type
                     raw = r["value"]
@@ -619,13 +671,14 @@ def run_phase3(pool: mp.Pool, datasets: dict) -> None:
 
 # ── Phase 5: Pairwise ─────────────────────────────────────────────────────────
 
-def _top_params_by_importance(n: int = PAIRWISE_TOP_N) -> list[str]:
+def _top_params_by_importance(n: int = PAIRWISE_TOP_N,
+                              metric: str = "val_skill_adj") -> list[str]:
     """
     Combine Phase 2, 3, 4 OAT results.  Return top-n params by mean
-    |ΔR²_adj| from baseline across all datasets and seeds.
+    |delta-metric| from baseline across all datasets and seeds.
     Only primary params are candidates (pairwise coupling is for primary params).
     """
-    # Collect mean R²_adj per (param, value_str) from phases 2 + 3
+    # Collect mean metric per (param, value_str) from phases 2 + 3
     cell: dict[tuple, list] = defaultdict(list)
     for csv_p in [CSV[2], CSV[3]]:
         if not os.path.exists(csv_p):
@@ -635,7 +688,7 @@ def _top_params_by_importance(n: int = PAIRWISE_TOP_N) -> list[str]:
                 if r.get("status") != "ok":
                     continue
                 try:
-                    v = float(r["val_r2_adj"])
+                    v = float(r[metric])
                     if not np.isnan(v):
                         cell[(r["param"], r["value"])].append(v)
                 except (ValueError, KeyError):
@@ -768,39 +821,22 @@ def _parse_config_json(json_str: str) -> dict:
     return result
 
 
-def _best_config_from_pairwise() -> dict:
+def _best_config_from_pairwise(metric: str = "val_skill_adj") -> dict:
     """
     Read Phase 5 pairwise CSV. Return the param combo with highest mean
-    R²_adj across all datasets, averaged over seeds and folds.
+    <metric> across all datasets, averaged over seeds and folds.
+    Falls back to OAT Phase 2 best-per-param if Phase 5 is unavailable.
     """
-    if not os.path.exists(CSV[5]):
-        # Fall back to Phase 2 best
-        if not os.path.exists(CSV[2]):
-            return dict(BASELINE)
-        cell: dict[str, list] = defaultdict(list)
-        with open(CSV[2], newline="", encoding="utf-8") as f:
-            for r in csv.DictReader(f):
-                if r.get("status") == "ok":
-                    try:
-                        v = float(r["val_r2_adj"])
-                        if not np.isnan(v):
-                            cell[r.get("config_json", "")].append(v)
-                    except (ValueError, KeyError):
-                        pass
-        if not cell:
-            return dict(BASELINE)
-        best_json = max(cell, key=lambda k: np.mean(cell[k]))
-        try:
-            return _parse_config_json(best_json)
-        except Exception:
-            return dict(BASELINE)
+    source = CSV[5] if os.path.exists(CSV[5]) else CSV[2]
+    if not os.path.exists(source):
+        return dict(BASELINE)
 
     cell: dict[str, list] = defaultdict(list)
-    with open(CSV[5], newline="", encoding="utf-8") as f:
+    with open(source, newline="", encoding="utf-8") as f:
         for r in csv.DictReader(f):
             if r.get("status") == "ok":
                 try:
-                    v = float(r["val_r2_adj"])
+                    v = float(r[metric])
                     if not np.isnan(v):
                         cell[r.get("config_json", "")].append(v)
                 except (ValueError, KeyError):
@@ -941,7 +977,7 @@ def print_noise_summary() -> None:
             if r.get("status") != "ok":
                 continue
             try:
-                v = float(r["val_r2_adj"])
+                v = float(r["val_r2_adj"])  # Phase 1 CSV only has val_r2_adj
                 if not np.isnan(v):
                     cell[(r["model"], r["noise_sigma"])].append(v)
             except (ValueError, KeyError):
@@ -977,7 +1013,7 @@ def _print_oat_table(csv_path: str, title: str, sweep: dict) -> None:
             if r.get("status") != "ok":
                 continue
             try:
-                v = float(r["val_r2_adj"])
+                v = float(r["val_skill_adj"])
                 if not np.isnan(v):
                     cell[(r["param"], r["value"], r["dataset"])].append(v)
                     ds_set.add(r["dataset"])
@@ -1072,7 +1108,7 @@ def print_edge_summary() -> None:
                     try:
                         bval = str(BASELINE.get(r["param"], ""))
                         if r["value"] == bval:
-                            v = float(r["val_r2_adj"])
+                            v = float(r["val_skill_adj"])
                             if not np.isnan(v):
                                 p2_base[r["param"]].append(v)
                     except (ValueError, KeyError):
@@ -1083,7 +1119,7 @@ def print_edge_summary() -> None:
         for r in csv.DictReader(f):
             if r.get("status") == "ok":
                 try:
-                    v = float(r["val_r2_adj"])
+                    v = float(r["val_skill_adj"])
                     if not np.isnan(v):
                         cell[(r["param"], r["value"])].append(v)
                 except (ValueError, KeyError):
@@ -1129,7 +1165,7 @@ def print_pairwise_summary() -> None:
             if r.get("status") != "ok":
                 continue
             try:
-                v = float(r["val_r2_adj"])
+                v = float(r["val_skill_adj"])
                 if np.isnan(v):
                     continue
                 p1  = r["param"]
@@ -1220,6 +1256,148 @@ def print_residual_summary() -> None:
         print(f"    Spearman |resid| vs frac_in_cone: {r_f:+.3f}")
         print(f"    Degenerate cones: {n_degen}/{len(ds_rows)}")
 
+# ── Two-set recommendation ────────────────────────────────────────────────────
+
+def _oat_best_config(metric: str = "val_skill_adj") -> dict:
+    """
+    Assemble best per-parameter config from OAT phases 2+3+4 using <metric>.
+    For each parameter the value with the highest mean <metric> across all
+    datasets and seeds is selected.  Later phases override earlier ones.
+    """
+    config = dict(BASELINE)
+    for csv_path in [CSV[2], CSV[3], CSV[4]]:
+        bests = _best_value_per_param(csv_path, metric)
+        config.update(bests)
+    return config
+
+
+def print_two_set_summary() -> None:
+    """
+    Print the two recommended GeoXGB parameter sets side-by-side:
+
+      Set 1 (NMAE-optimal):  maximise val_skill_adj
+        = noise-floor-corrected NMAE skill
+        = (nmae_baseline - nmae_model) / (nmae_baseline - nmae_floor)
+        where nmae_baseline = MAE_mean_predictor / std(y).
+        Sensitive to scale via std(y); penalises large errors on outlier-rich
+        targets less than MAD-skill does.
+
+      Set 2 (MAD-skill-optimal):  maximise val_mad_skill
+        = (MAE_median_pred - MAE_model) / (MAE_median_pred - MAE_floor)
+        where MAE_median_pred = mean(|y_val - median(y_train)|)
+        and   MAE_floor = sigma_noise * sqrt(2/pi)  [same irreducible floor].
+        Baseline is the Bayes-optimal constant L1 predictor (predict-median).
+        Robust to heavy tails: MAE_median_pred is unaffected by outliers
+        that inflate std(y).  Noise-floor corrected identically to Set 1.
+
+    When to use each set:
+      NMAE-optimal  --  target is approximately symmetric (synthetic benchmarks,
+                        z-score normalised data).  std(y) is a fair scale.
+      MAD-optimal   --  target is skewed or heavy-tailed (house prices, income,
+                        biological assays).  std(y) is inflated by extremes;
+                        the median predictor is the right baseline.
+
+    The two sets are derived from the highest-metric config across OAT phases
+    2-4, with pairwise phase 5 used if available.
+    """
+    print("\n" + "=" * 72)
+    print("  TWO RECOMMENDED PARAMETER SETS")
+    print("=" * 72)
+    print()
+    print("  Metric definitions:")
+    print("  NMAE-skill : (MAE_mean_pred - MAE) / (MAE_mean_pred - MAE_floor)  [noise-floor corrected]")
+    print("               Baseline = predict training mean.  Floor = sigma*sqrt(2/pi).")
+    print("               Sensitive to outlier scale (outliers inflate std and MAE_mean_pred).")
+    print("  MAD-skill  : (MAE_median_pred - MAE) / (MAE_median_pred - MAE_floor)  [noise-floor corrected]")
+    print("               Baseline = predict training median (Bayes-optimal L1 constant).")
+    print("               Same irreducible floor.  Robust to skewed / heavy-tailed targets.")
+    print()
+
+    # Prefer pairwise results; fall back to OAT-assembled config
+    if os.path.exists(CSV[5]):
+        nmae_cfg = _best_config_from_pairwise("val_skill_adj")
+        mad_cfg  = _best_config_from_pairwise("val_mad_skill")
+        source_label = "Phase 5 pairwise"
+    else:
+        nmae_cfg = _oat_best_config("val_skill_adj")
+        mad_cfg  = _oat_best_config("val_mad_skill")
+        source_label = "OAT phases 2-4 (phase 5 not yet run)"
+
+    print(f"  Source: {source_label}")
+    print()
+
+    all_params = sorted(set(list(PRIMARY_SWEEP.keys()) + list(SECONDARY_SWEEP.keys())))
+
+    hdr = (f"  {'Parameter':<24}  {'Baseline':>12}  "
+           f"{'Set1 NMAE':>12}  {'Set2 MAD':>12}  {'Diff?'}")
+    print(hdr)
+    print("  " + "-" * (len(hdr) - 2))
+
+    diffs: list[str] = []
+    for param in all_params:
+        base_val = BASELINE.get(param, "—")
+        nmae_val = nmae_cfg.get(param, base_val)
+        mad_val  = mad_cfg.get(param, base_val)
+        differ   = str(nmae_val) != str(mad_val)
+        mark     = " <--" if differ else ""
+        if differ:
+            diffs.append(param)
+        print(f"  {param:<24}  {str(base_val):>12}  "
+              f"{str(nmae_val):>12}  {str(mad_val):>12}  {mark}")
+
+    print()
+    if diffs:
+        print(f"  Parameters where sets diverge: {diffs}")
+        print()
+        print("  Interpretation:")
+        print("    Divergence means the optimal value depends on whether errors")
+        print("    are measured against std(y) vs the median predictor.")
+        print("    -> Use Set 1 when std(y) is a fair scale (symmetric targets).")
+        print("    -> Use Set 2 when target has skew / heavy tails (robust scale).")
+    else:
+        print("  Both sets agree on all parameters.")
+        print("  This is expected for symmetric synthetic datasets (mean ~ median,")
+        print("  MAD ~ 0.67*std).  Divergence typically appears with skewed real-world")
+        print("  targets such as house prices, survival times, or count data.")
+
+    # Per-metric baseline vs best-config mean (from OAT phase 2, if available)
+    print()
+    print("  Mean metric improvement over BASELINE config (OAT phase 2):")
+    for metric, label, cfg in [
+        ("val_skill_adj", "NMAE-skill", nmae_cfg),
+        ("val_mad_skill",  "MAD-skill",  mad_cfg),
+    ]:
+        if not os.path.exists(CSV[2]):
+            print(f"    {label}: phase 2 not run yet.")
+            continue
+        base_scores: list[float] = []
+        best_scores: list[float] = []
+        with open(CSV[2], newline="", encoding="utf-8") as f:
+            for r in csv.DictReader(f):
+                if r.get("status") != "ok":
+                    continue
+                try:
+                    v = float(r[metric])
+                    if np.isnan(v):
+                        continue
+                    bval = str(BASELINE.get(r["param"], ""))
+                    if r["value"] == bval:
+                        base_scores.append(v)
+                    cfg_val = cfg.get(r["param"])
+                    if cfg_val is not None and r["value"] == str(cfg_val):
+                        best_scores.append(v)
+                except (ValueError, KeyError):
+                    pass
+        if base_scores and best_scores:
+            bm = float(np.mean(base_scores))
+            fm = float(np.mean(best_scores))
+            print(f"    {label:<12}: baseline={bm:.4f}  optimized≈{fm:.4f}  "
+                  f"delta={fm - bm:+.4f}")
+        else:
+            print(f"    {label:<12}: insufficient data (re-run phase 2 to populate "
+                  f"{metric}).")
+
+
 # ── Main ──────────────────────────────────────────────────────────────────────
 
 def main() -> None:
@@ -1238,6 +1416,16 @@ def main() -> None:
     n_jobs   = n_cpu if args.jobs <= 0 else args.jobs
     run_all  = args.phase is None and not args.summary
 
+    # Limit BLAS threads to 1 per worker process.
+    # With 'spawn' context each worker fully reinitialises Python; OpenBLAS would
+    # otherwise claim all cores, turning n_jobs workers into n_jobs×n_cpu threads
+    # and exhausting virtual memory on large-core machines.
+    # Must be set BEFORE the Pool is created — spawned workers inherit env.
+    import os as _os
+    for _var in ("OMP_NUM_THREADS", "OPENBLAS_NUM_THREADS",
+                 "MKL_NUM_THREADS", "VECLIB_MAXIMUM_THREADS"):
+        _os.environ.setdefault(_var, "1")
+
     print("\nGeoXGB Regression Meta-Analysis v2")
     print(f"  CPUs: {n_cpu}  workers: {n_jobs}")
     print(f"  Results dir: {RESULTS_DIR}")
@@ -1249,6 +1437,7 @@ def main() -> None:
         print_secondary_summary()
         print_pairwise_summary()
         print_residual_summary()
+        print_two_set_summary()
         return
 
     datasets = _make_datasets()
@@ -1289,6 +1478,7 @@ def main() -> None:
     print_secondary_summary()
     print_pairwise_summary()
     print_residual_summary()
+    print_two_set_summary()
 
 
 if __name__ == "__main__":

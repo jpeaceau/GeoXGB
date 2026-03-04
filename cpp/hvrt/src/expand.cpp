@@ -70,6 +70,48 @@ static Eigen::MatrixXd gen_epanechnikov(
     return out;
 }
 
+static Eigen::MatrixXd gen_simplex_mixup(
+    const PartitionKDEParams& p, int n_gen, pcg64& rng)
+{
+    int n_train = p.n_samples;
+    int d_cont  = static_cast<int>(p.per_feature_std.size());
+
+    std::uniform_real_distribution<double> u01(0.0, 1.0);
+    std::uniform_int_distribution<int>     pick_row(0, n_train - 1);
+
+    Eigen::MatrixXd out(n_gen, d_cont);
+    for (int i = 0; i < n_gen; ++i) {
+        int   a      = pick_row(rng);
+        int   b      = pick_row(rng);
+        double lam   = u01(rng);
+        out.row(i)   = p.X_cont.row(a) + lam * (p.X_cont.row(b) - p.X_cont.row(a));
+    }
+    return out;
+}
+
+static Eigen::MatrixXd gen_laplace(
+    const PartitionKDEParams& p, int n_gen, pcg64& rng)
+{
+    int d_cont = static_cast<int>(p.per_feature_std.size());
+
+    std::uniform_real_distribution<double> u01(0.0, 1.0);
+
+    const Eigen::VectorXd& centroid = p.centroid_cont;
+
+    Eigen::MatrixXd out(n_gen, d_cont);
+    for (int i = 0; i < n_gen; ++i) {
+        for (int j = 0; j < d_cont; ++j) {
+            double b  = p.per_feature_mad[j];  // Laplace scale
+            double u  = u01(rng);
+            // Inverse CDF of Laplace(0, b): -b * sign(u-0.5) * ln(1 - 2|u-0.5|)
+            double su = (u > 0.5) ? 1.0 : -1.0;
+            double sample = -b * su * std::log(1.0 - 2.0 * std::abs(u - 0.5) + 1e-15);
+            out(i, j) = centroid[j] + sample;
+        }
+    }
+    return out;
+}
+
 static Eigen::MatrixXd gen_bootstrap(
     const PartitionKDEParams& p, int n_gen, pcg64& rng)
 {
@@ -173,6 +215,22 @@ PartitionKDEParams Expander::fit_partition(
         double mu  = X_cont_p.col(j).mean();
         double var = (X_cont_p.col(j).array() - mu).square().mean();
         par.per_feature_std[j] = std::sqrt(var + 1e-8);
+    }
+
+    // Per-feature MAD + centroid — Laplace strategy only (never read by other strategies)
+    if (strategy == GenerationStrategy::Laplace) {
+        par.centroid_cont = X_cont_p.colwise().mean();
+        par.per_feature_mad.resize(d_cont);
+        for (int j = 0; j < d_cont; ++j) {
+            std::vector<double> col(n_p);
+            for (int i = 0; i < n_p; ++i) col[i] = X_cont_p(i, j);
+            std::nth_element(col.begin(), col.begin() + n_p / 2, col.end());
+            double med_j = col[n_p / 2];
+            std::vector<double> devs(n_p);
+            for (int i = 0; i < n_p; ++i) devs[i] = std::abs(X_cont_p(i, j) - med_j);
+            std::nth_element(devs.begin(), devs.begin() + n_p / 2, devs.end());
+            par.per_feature_mad[j] = std::max(1.4826 * devs[n_p / 2], 1e-8);
+        }
     }
 
     par.X_cont = X_cont_p;
@@ -373,6 +431,14 @@ Eigen::MatrixXd Expander::generate(
             cont_samples = (!par.cdf_y_grid.empty())
                 ? gen_copula(par, n_gen, rng)
                 : gen_epanechnikov(par, n_gen, rng);
+            break;
+        case GenerationStrategy::SimplexMixup:
+            cont_samples = (par.n_samples >= 2)
+                ? gen_simplex_mixup(par, n_gen, rng)
+                : gen_epanechnikov(par, n_gen, rng);
+            break;
+        case GenerationStrategy::Laplace:
+            cont_samples = gen_laplace(par, n_gen, rng);
             break;
         default:
             cont_samples = gen_epanechnikov(par, n_gen, rng);
