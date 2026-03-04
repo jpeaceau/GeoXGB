@@ -7,65 +7,73 @@ class GeoXGBRegressor(_GeoXGBBase):
     """
     Geometry-aware gradient boosting regressor.
 
-    Optimises squared-error loss with PyramidHART-based sample curation.
-    Defaults are tuned via OAT + pairwise sweep (meta-regression, 5 seeds ×
-    3 folds, 4 datasets) followed by 2 000+ trial Optuna TPE search on
-    diabetes and Friedman-1/2 benchmarks.
+    Supports two loss functions via the ``loss`` parameter:
+
+    * ``'squared_error'`` (default) — standard L2 gradient boosting.
+      Gradients are residuals ``y − ŷ``; leaf values are means.
+      Optimal defaults: ``max_depth=3``, ``y_weight=0.25``,
+      ``method='variance_ordered'``.
+
+    * ``'absolute_error'`` — L1 gradient boosting.
+      Gradients are signs ``sign(y − ŷ) ∈ {−1, 0, +1}``; trees minimise
+      MAE directly.  For best results, also set:
+      ``max_depth=4``, ``y_weight=0.5``,
+      ``method='orthant_stratified'``,
+      ``adaptive_reduce_ratio=True``.
 
     .. note:: **HPO is strongly recommended.**
         ``learning_rate`` and ``max_depth`` are the two most sensitive
-        parameters and interact strongly: the optimal regime is low
+        parameters and interact strongly.  The optimal regime is low
         learning_rate (0.010–0.020) paired with high ``n_rounds``
-        (1 000–5 000), while shallower ``max_depth`` (2–3) consistently
-        outperforms deeper trees once the PyramidHART geometry is well-tuned.
-        These optima shift substantially across datasets — what works for
-        diabetes can differ 5× in ``learning_rate`` from what works for
-        Friedman-1.  Use ``GeoXGBOptimizer`` or any Optuna/sklearn HPO tool
-        for production models.
+        (1 000–5 000) and shallow ``max_depth`` (2–3 for L2; 3–4 for L1).
+        Use ``GeoXGBOptimizer`` or any Optuna/sklearn HPO tool for
+        production models.
 
     Parameters
     ----------
+    loss : 'squared_error' | 'absolute_error', default='squared_error'
+        Loss function.  ``'absolute_error'`` uses sign gradients (L1
+        boosting) and always runs on the Python backend.  When switching
+        to ``'absolute_error'``, consider also setting
+        ``method='orthant_stratified'``, ``max_depth=4``,
+        ``y_weight=0.5``, and ``adaptive_reduce_ratio=True`` for best
+        results.
     n_rounds : int, default=1000
         Number of boosting rounds.
     learning_rate : float, default=0.02
-        Shrinkage per tree.  Optimal range is 0.010–0.020 (Optuna, 2 000+
-        trials); lower values require more rounds.  **Highly dataset-sensitive
-        — HPO recommended.**
+        Shrinkage per tree.  Optimal range 0.010–0.020.
     max_depth : int, default=3
-        Maximum depth of each weak learner.  Optuna finds depth 2–3 optimal
-        across regression benchmarks (PyramidHART OAT rank 1 parameter).
-        **Highly dataset-sensitive — HPO recommended.**
+        Maximum depth of each weak learner.
     min_samples_leaf : int, default=5
-        Minimum samples per leaf in each weak learner (DecisionTree).
-    hvrt_min_samples_leaf : int or None, default=None
-        Minimum samples per leaf in the partition tree.
+        Minimum samples per leaf in each weak learner.
     n_partitions : int or None, default=None
-        Target number of partitions.
+        Target number of partitions (None = auto).
     reduce_ratio : float, default=0.8
-        Fraction of samples to keep per boosting round.
+        Fraction of samples retained per resampling round.
     expand_ratio : float, default=0.1
         Fraction of n to generate as synthetic samples.
     y_weight : float, default=0.25
-        Partition blend: 0 = unsupervised geometry, 1 = fully y-driven.
-        Optuna consistently finds 0.21–0.28 optimal across regression tasks.
-    variance_weighted : bool, default=False
-        Uniform FPS budgets across partitions.
+        Partition blend: 0 = geometry-only, 1 = fully gradient-driven.
+    method : str, default='variance_ordered'
+        Reduction strategy.  Use ``'orthant_stratified'`` with
+        ``loss='absolute_error'``.
     refit_interval : int or None, default=50
-        Refit partition tree on residuals every N rounds.  PyramidHART OAT
-        rank 2; polyhedral boundaries are stable once established.
+        Re-fit partition tree every N rounds.
     auto_noise : bool, default=True
-        Enable automatic noise-modulation gating.  Recommended for
-        PyramidHART: compensates for the loss of T-orthogonality (Theorem 3)
-        under isotropic Gaussian feature noise.
+        Enable noise-modulation gating.
     noise_guard : bool, default=True
-        Enable noise-guard veto on resampling.  Works in tandem with
-        auto_noise to protect PyramidHART partitions when gradient signal
-        is structureless.
+        Enable noise-guard veto on resampling.
+    partitioner : str, default='pyramid_hart'
+        Partition geometry.  See parameters reference for options.
+    adaptive_reduce_ratio : bool, default=False
+        Dynamically increase reduce_ratio for heavy-tailed gradients.
+        Recommended with ``loss='absolute_error'``.
     random_state : int, default=42
     """
 
     def __init__(
         self,
+        loss='squared_error',
         n_rounds=1000,
         learning_rate=0.02,
         max_depth=3,
@@ -102,6 +110,11 @@ class GeoXGBRegressor(_GeoXGBBase):
         partitioner='pyramid_hart',
         adaptive_reduce_ratio=False,
     ):
+        if loss not in ('squared_error', 'absolute_error'):
+            raise ValueError(
+                f"loss must be 'squared_error' or 'absolute_error', got {loss!r}"
+            )
+        self.loss = loss
         super().__init__(
             n_rounds=n_rounds,
             learning_rate=learning_rate,
@@ -144,18 +157,18 @@ class GeoXGBRegressor(_GeoXGBBase):
         """
         Fit the regressor.
 
-        Uses the compiled C++ backend by default (faster, no Numba required).
-        Falls back to the pure-Python path when the C++ extension is not
-        available or when ``feature_types`` is specified (categorical columns
-        are not yet supported in the C++ backend).
+        Uses the compiled C++ backend by default for ``loss='squared_error'``
+        (faster, no additional dependencies required).  Falls back to the
+        pure-Python path when the C++ extension is not available, when
+        ``feature_types`` is specified, when ``convergence_tol`` is set,
+        or when ``loss='absolute_error'`` (L1 boosting is Python-only).
 
         Parameters
         ----------
         X : array-like of shape (n_samples, n_features)
         y : array-like of shape (n_samples,)
         feature_types : list of str, optional
-            'continuous' or 'categorical' per column.  When provided the
-            Python backend is used automatically.
+            'continuous' or 'categorical' per column.  Forces Python backend.
 
         Returns
         -------
@@ -165,7 +178,14 @@ class GeoXGBRegressor(_GeoXGBBase):
         X = np.asarray(X, dtype=np.float64)
         y = np.asarray(y, dtype=np.float64)
 
-        if _CPP_AVAILABLE and feature_types is None and self.convergence_tol is None:
+        _use_cpp = (
+            _CPP_AVAILABLE
+            and self.loss == 'squared_error'
+            and feature_types is None
+            and self.convergence_tol is None
+        )
+
+        if _use_cpp:
             from geoxgb._cpp_backend import make_cpp_config, CppGeoXGBRegressor as _CppReg
             params = {k: getattr(self, k) for k in self._PARAM_NAMES if hasattr(self, k)}
             self._cpp_model = _CppReg(make_cpp_config(**params))
@@ -205,111 +225,39 @@ class GeoXGBRegressor(_GeoXGBBase):
         return len(self._trees)
 
     def _compute_init_prediction(self, y):
+        if self.loss == 'absolute_error':
+            return float(np.median(y))
         return float(np.mean(y))
 
     def _compute_gradients(self, y, predictions):
-        # Negative gradient of squared-error = residual
+        if self.loss == 'absolute_error':
+            return np.sign(y - predictions)
         return y - predictions
 
 
-class GeoXGBMAERegressor(GeoXGBRegressor):
+def GeoXGBMAERegressor(
+    loss='absolute_error',
+    max_depth=4,
+    y_weight=0.5,
+    method='orthant_stratified',
+    adaptive_reduce_ratio=True,
+    **kwargs,
+):
     """
-    GeoXGB regressor optimised for Mean Absolute Error.
+    Backward-compatible alias for ``GeoXGBRegressor(loss='absolute_error')``.
 
-    Uses L1 (sign) gradients so trees minimise MAE directly, combined with
-    PyramidHART partitioning (``A = |S| - ||z||_1``, MAD-normalised) whose
-    polyhedral level sets are exactly representable by axis-aligned decision
-    tree splits — eliminating the approximation mismatch of smooth quadric
-    boundaries (HVRT/HART) with axis-aligned weak learners.
+    Returns a ``GeoXGBRegressor`` pre-configured with MAE-optimal defaults:
+    ``max_depth=4``, ``y_weight=0.5``, ``method='orthant_stratified'``,
+    ``adaptive_reduce_ratio=True``.  All parameters can be overridden.
 
-    L1 gradient: ``sign(y - pred)`` in {-1, 0, +1}.  Trees target the median
-    of residuals in each leaf (optimal under MAE).
-
-    Default hyperparameters selected for MAE performance:
-
-    - PyramidHART partitioner: exact tree-level-set alignment + outlier
-      cancellation; MAD normalisation robust to heavy-tailed residuals
-    - orthant_stratified FPS: covers all 2^d sign-consistent facets of the
-      cross-polytope, ensuring no cooperative region is under-sampled
-    - simplex_mixup expansion: in-orthant interpolation, parameter-free,
-      stays in the convex hull; outperforms Laplace kernel empirically
-    - adaptive_reduce_ratio: keeps more samples when gradient tail is heavy
-    - depth=4, refit_interval=50: PyramidHART OAT + pairwise optimum
-    - auto_noise + noise_guard: compensate for PyramidHART's loss of the
-      T-orthogonality noise-invariance guarantee (Theorem 3)
-
-    Parameters
-    ----------
-    n_rounds : int, default=1000
-    learning_rate : float, default=0.02
-    max_depth : int, default=4
-    min_samples_leaf : int, default=5
-    reduce_ratio : float, default=0.8
-    expand_ratio : float, default=0.1
-    y_weight : float, default=0.5
-    variance_weighted : bool, default=False
-    refit_interval : int, default=50
-    auto_noise : bool, default=True
-    noise_guard : bool, default=True
-    partitioner : str, default='pyramid_hart'
-    adaptive_reduce_ratio : bool, default=True
-    random_state : int, default=42
-    **kwargs : forwarded to GeoXGBRegressor
+    Prefer constructing ``GeoXGBRegressor(loss='absolute_error', ...)``
+    directly in new code.
     """
-
-    def __init__(
-        self,
-        n_rounds=1000,
-        learning_rate=0.02,
-        max_depth=4,
-        min_samples_leaf=5,
-        reduce_ratio=0.8,
-        expand_ratio=0.1,
-        y_weight=0.5,
-        variance_weighted=False,
-        refit_interval=50,
-        auto_noise=True,
-        noise_guard=True,
-        partitioner='pyramid_hart',
-        method='orthant_stratified',
-        generation_strategy='simplex_mixup',
-        adaptive_reduce_ratio=True,
-        random_state=42,
+    return GeoXGBRegressor(
+        loss=loss,
+        max_depth=max_depth,
+        y_weight=y_weight,
+        method=method,
+        adaptive_reduce_ratio=adaptive_reduce_ratio,
         **kwargs,
-    ):
-        super().__init__(
-            n_rounds=n_rounds,
-            learning_rate=learning_rate,
-            max_depth=max_depth,
-            min_samples_leaf=min_samples_leaf,
-            reduce_ratio=reduce_ratio,
-            expand_ratio=expand_ratio,
-            y_weight=y_weight,
-            variance_weighted=variance_weighted,
-            refit_interval=refit_interval,
-            auto_noise=auto_noise,
-            noise_guard=noise_guard,
-            partitioner=partitioner,
-            method=method,
-            generation_strategy=generation_strategy,
-            adaptive_reduce_ratio=adaptive_reduce_ratio,
-            random_state=random_state,
-            **kwargs,
-        )
-
-    def fit(self, X, y, feature_types=None):
-        # MAE requires L1 (sign) gradients — always uses the Python path.
-        self._cpp_model = None
-        self._feature_types = feature_types
-        self._resample_history = []
-        self._fit_boosting(X, y)
-        return self
-
-    def _compute_init_prediction(self, y):
-        # Median is the optimal constant predictor under MAE
-        return float(np.median(y))
-
-    def _compute_gradients(self, y, predictions):
-        # L1 gradient: sign of residual (clipped to {-1, 0, +1})
-        # Trees minimise mean absolute gradient residual → leaf values = median
-        return np.sign(y - predictions)
+    )

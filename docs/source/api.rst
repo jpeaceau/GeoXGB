@@ -8,9 +8,7 @@ API Reference
    :undoc-members: False
    :show-inheritance:
 
-.. autoclass:: geoxgb.GeoXGBMAERegressor
-   :members: fit, predict
-   :show-inheritance:
+.. autofunction:: geoxgb.GeoXGBMAERegressor
 
 .. autoclass:: geoxgb.GeoXGBClassifier
    :members: fit, predict, predict_proba, feature_importances,
