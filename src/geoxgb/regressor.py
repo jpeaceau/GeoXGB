@@ -144,21 +144,40 @@ class GeoXGBRegressor(_GeoXGBBase):
         """
         Fit the regressor.
 
+        Uses the compiled C++ backend by default (faster, no Numba required).
+        Falls back to the pure-Python path when the C++ extension is not
+        available or when ``feature_types`` is specified (categorical columns
+        are not yet supported in the C++ backend).
+
         Parameters
         ----------
         X : array-like of shape (n_samples, n_features)
         y : array-like of shape (n_samples,)
         feature_types : list of str, optional
-            'continuous' or 'categorical' per column.
-            None means all continuous.
+            'continuous' or 'categorical' per column.  When provided the
+            Python backend is used automatically.
 
         Returns
         -------
         self
         """
-        self._feature_types = feature_types
-        self._resample_history = []
-        self._fit_boosting(X, y)
+        from geoxgb._cpp_backend import _CPP_AVAILABLE
+        X = np.asarray(X, dtype=np.float64)
+        y = np.asarray(y, dtype=np.float64)
+
+        if _CPP_AVAILABLE and feature_types is None and self.convergence_tol is None:
+            from geoxgb._cpp_backend import make_cpp_config, CppGeoXGBRegressor as _CppReg
+            params = {k: getattr(self, k) for k in self._PARAM_NAMES if hasattr(self, k)}
+            self._cpp_model = _CppReg(make_cpp_config(**params))
+            self._cpp_model.fit(X, y)
+            self._is_fitted = True
+            cr = self._cpp_model.convergence_round()
+            self.convergence_round_ = None if cr < 0 else cr
+        else:
+            self._cpp_model = None
+            self._feature_types = feature_types
+            self._resample_history = []
+            self._fit_boosting(X, y)
         return self
 
     def predict(self, X):
@@ -173,8 +192,17 @@ class GeoXGBRegressor(_GeoXGBBase):
         -------
         ndarray of shape (n_samples,)
         """
+        if getattr(self, '_cpp_model', None) is not None:
+            return self._cpp_model.predict(np.asarray(X, dtype=np.float64))
         self._check_fitted()
         return self._raw_predict(X)
+
+    @property
+    def n_trees(self):
+        if getattr(self, '_cpp_model', None) is not None:
+            cr = self.convergence_round_
+            return cr if cr is not None else self.n_rounds
+        return len(self._trees)
 
     def _compute_init_prediction(self, y):
         return float(np.mean(y))
@@ -267,6 +295,14 @@ class GeoXGBMAERegressor(GeoXGBRegressor):
             random_state=random_state,
             **kwargs,
         )
+
+    def fit(self, X, y, feature_types=None):
+        # MAE requires L1 (sign) gradients — always uses the Python path.
+        self._cpp_model = None
+        self._feature_types = feature_types
+        self._resample_history = []
+        self._fit_boosting(X, y)
+        return self
 
     def _compute_init_prediction(self, y):
         # Median is the optimal constant predictor under MAE

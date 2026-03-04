@@ -12,7 +12,8 @@ N = 300
 
 def _fit_and_noise(X, y):
     reg = GeoXGBRegressor(n_rounds=10, auto_noise=True, random_state=0)
-    reg.fit(X, y)
+    # feature_types forces Python path (noise_estimate/sample_provenance require Python backend)
+    reg.fit(X, y, feature_types=["continuous"] * X.shape[1])
     return reg.noise_estimate(), reg.sample_provenance()["reduction_ratio"]
 
 

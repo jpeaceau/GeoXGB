@@ -18,7 +18,8 @@ HVRT::HVRT(HVRTConfig cfg) : cfg_(std::move(cfg)) {}
 ReductionMethod HVRT::parse_reduction_method(const std::string& s) {
     if (s == "centroid_fps"        || s == "CentroidFPS")      return ReductionMethod::CentroidFPS;
     if (s == "medoid_fps"          || s == "MedoidFPS")        return ReductionMethod::MedoidFPS;
-    if (s == "variance"            || s == "VarianceOrdered")  return ReductionMethod::VarianceOrdered;
+    if (s == "variance"            || s == "VarianceOrdered"
+                                   || s == "variance_ordered") return ReductionMethod::VarianceOrdered;
     if (s == "stratified"          || s == "Stratified")       return ReductionMethod::Stratified;
     if (s == "orthant_stratified"  || s == "OrthantStratified") return ReductionMethod::OrthantStratified;
     throw std::invalid_argument("Unknown reduction method: " + s);

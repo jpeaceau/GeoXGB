@@ -111,7 +111,7 @@ def test_refit_disabled():
     X = RNG.standard_normal((N, P))
     y = RNG.standard_normal(N)
     reg = GeoXGBRegressor(n_rounds=20, refit_interval=None, random_state=0)
-    reg.fit(X, y)
+    reg.fit(X, y, feature_types=["continuous"] * P)
     preds = reg.predict(X)
     assert preds.shape == (N,)
     assert reg.n_resamples == 1
@@ -125,7 +125,7 @@ def test_expand_enabled():
     X = RNG.standard_normal((N, P))
     y = RNG.standard_normal(N)
     reg = GeoXGBRegressor(n_rounds=20, expand_ratio=0.2, random_state=0)
-    reg.fit(X, y)
+    reg.fit(X, y, feature_types=["continuous"] * P)
     preds = reg.predict(X)
     assert preds.shape == (N,)
     assert reg.sample_provenance()["expanded_n"] > 0

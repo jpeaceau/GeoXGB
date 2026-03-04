@@ -22,7 +22,8 @@ def _fitted_model(expand_ratio=0.0):
         expand_ratio=expand_ratio, random_state=0,
         auto_expand=False, hvrt_min_samples_leaf=20,
     )
-    reg.fit(X, y)
+    # feature_types forces Python path (interpretability API requires Python backend)
+    reg.fit(X, y, feature_types=["continuous"] * P)
     return reg
 
 
@@ -131,7 +132,7 @@ def test_noise_estimate_clean():
     X = RNG.standard_normal((300, 5))
     y = 3 * X[:, 0] - 2 * X[:, 1] + RNG.standard_normal(300) * 0.05
     reg = GeoXGBRegressor(n_rounds=10, refit_interval=5, auto_noise=True, random_state=0)
-    reg.fit(X, y)
+    reg.fit(X, y, feature_types=["continuous"] * 5)
     ne = reg.noise_estimate()
     assert 0.0 <= ne <= 1.0
     assert ne > 0.5, f"Clean data noise_estimate={ne:.3f}, expected > 0.5"
@@ -140,7 +141,7 @@ def test_noise_estimate_noisy():
     X = RNG.standard_normal((300, 5))
     y = 3 * X[:, 0] - 2 * X[:, 1] + RNG.standard_normal(300) * 20.0
     reg = GeoXGBRegressor(n_rounds=10, refit_interval=5, auto_noise=True, random_state=0)
-    reg.fit(X, y)
+    reg.fit(X, y, feature_types=["continuous"] * 5)
     ne = reg.noise_estimate()
     assert 0.0 <= ne <= 1.0
     assert ne < 0.5, f"Noisy data noise_estimate={ne:.3f}, expected < 0.5"
