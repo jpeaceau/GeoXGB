@@ -217,15 +217,16 @@ class GeoXGBMAERegressor(GeoXGBRegressor):
     GeoXGB regressor optimised for Mean Absolute Error.
 
     Uses L1 (sign) gradients so trees minimise MAE directly, combined with
-    PyramidHART partitioning (A = |S| - ||z||_1, MAD-normalised) whose
+    PyramidHART partitioning (``A = |S| - ||z||_1``, MAD-normalised) whose
     polyhedral level sets are exactly representable by axis-aligned decision
     tree splits — eliminating the approximation mismatch of smooth quadric
     boundaries (HVRT/HART) with axis-aligned weak learners.
 
-    L1 gradient: sign(y - pred) in {-1, 0, +1}.  Trees target the median
+    L1 gradient: ``sign(y - pred)`` in {-1, 0, +1}.  Trees target the median
     of residuals in each leaf (optimal under MAE).
 
     Default hyperparameters selected for MAE performance:
+
     - PyramidHART partitioner: exact tree-level-set alignment + outlier
       cancellation; MAD normalisation robust to heavy-tailed residuals
     - orthant_stratified FPS: covers all 2^d sign-consistent facets of the
