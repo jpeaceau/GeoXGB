@@ -36,6 +36,7 @@ class _GeoXGBBase:
         "feature_weights", "assignment_strategy", "tree_splitter",
         "refit_noise_floor", "noise_guard", "hvrt_params", "hvrt_tree_splitter",
         "hvrt_auto_reduce_threshold", "partitioner", "adaptive_reduce_ratio",
+        "loss",
     )
 
     # Subclasses set this to True to enable class-conditional noise estimation
