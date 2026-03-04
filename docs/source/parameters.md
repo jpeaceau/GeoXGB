@@ -1,7 +1,10 @@
 # Parameters Reference
 
-This page documents every constructor parameter for `GeoXGBRegressor`,
-`GeoXGBClassifier`, and `GeoXGBMAERegressor`. Parameters are grouped by role.
+This page documents every constructor parameter for `GeoXGBRegressor` and
+`GeoXGBClassifier`. Parameters are grouped by role.
+
+`GeoXGBMAERegressor` is a backward-compatible alias for
+`GeoXGBRegressor(loss='absolute_error', ...)` and accepts the same parameters.
 
 ---
 
@@ -36,6 +39,35 @@ to reduce loss until convergence. The recommended workflow is:
 1. Find `learning_rate` via HPO (see [HPO guide](hpo_guide.md)).
 2. Set `n_rounds` high (1 000–5 000) and let training run to completion.
 3. Use `convergence_tol` to stop automatically if desired.
+
+---
+
+## Loss function
+
+### `loss` — str, default `'squared_error'`
+
+The loss function (gradient) used during boosting.
+
+| Value | Gradient | Init prediction | Best for |
+|---|---|---|---|
+| `'squared_error'` | `y − ŷ` (residuals) | mean(y) | General regression (default) |
+| `'absolute_error'` | `sign(y − ŷ) ∈ {−1, 0, +1}` | median(y) | Outlier-robust; heavy-tailed targets |
+
+Changing to `'absolute_error'` automatically routes to the Python backend
+(L1 boosting is not yet implemented in the C++ extension).  For best MAE
+performance, also set:
+
+```python
+GeoXGBRegressor(
+    loss='absolute_error',
+    max_depth=4,
+    y_weight=0.5,
+    method='orthant_stratified',
+    adaptive_reduce_ratio=True,
+)
+```
+
+`GeoXGBMAERegressor` is a convenience alias that pre-sets these defaults.
 
 ---
 
@@ -150,7 +182,8 @@ with covariates.
 
 **Advanced only.** Avoid mixing partitioners with mismatched reduction methods
 (e.g. `method='orthant_stratified'` is designed for pyramid geometry and will
-underperform with `'hvrt'`).
+underperform with `'hvrt'`). `'orthant_stratified'` is the recommended companion
+for `loss='absolute_error'`.
 
 ---
 
@@ -374,7 +407,7 @@ has a heavy tail (90th percentile / median > 1.5), retaining more samples during
 rounds with large outlier gradients. Enabled by default in `GeoXGBMAERegressor`
 where L1 gradients are more prone to tail effects.
 
-- **Set to `True`** for MAE regression or datasets with heavy-tailed targets.
+- **Set to `True`** when using `loss='absolute_error'` or datasets with heavy-tailed targets.
 - **Leave at `False`** for standard squared-error regression.
 
 ---

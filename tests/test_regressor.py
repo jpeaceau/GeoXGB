@@ -7,7 +7,7 @@ from sklearn.datasets import make_regression
 from sklearn.ensemble import GradientBoostingRegressor
 from sklearn.metrics import r2_score
 
-from geoxgb import GeoXGBRegressor
+from geoxgb import GeoXGBRegressor, GeoXGBMAERegressor
 
 RNG = np.random.default_rng(0)
 N, P = 200, 5
@@ -129,3 +129,54 @@ def test_expand_enabled():
     preds = reg.predict(X)
     assert preds.shape == (N,)
     assert reg.sample_provenance()["expanded_n"] > 0
+
+
+# ---------------------------------------------------------------------------
+# 8. loss='absolute_error' (L1 boosting)
+# ---------------------------------------------------------------------------
+
+def test_loss_absolute_error_smoke():
+    X = RNG.standard_normal((N, P))
+    y = RNG.standard_normal(N)
+    reg = GeoXGBRegressor(loss='absolute_error', n_rounds=20, random_state=0)
+    reg.fit(X, y)
+    preds = reg.predict(X)
+    assert preds.shape == (N,)
+    # MAE uses Python path — no C++ model
+    assert reg._cpp_model is None
+
+
+def test_loss_absolute_error_uses_python_path():
+    X = RNG.standard_normal((N, P))
+    y = RNG.standard_normal(N)
+    reg = GeoXGBRegressor(loss='absolute_error', n_rounds=20, random_state=0)
+    reg.fit(X, y)
+    assert reg._cpp_model is None
+    assert len(reg._trees) == 20
+
+
+def test_loss_invalid():
+    with pytest.raises(ValueError):
+        GeoXGBRegressor(loss='huber')
+
+
+def test_mae_regressor_alias():
+    # GeoXGBMAERegressor is a backward-compat alias returning GeoXGBRegressor
+    X = RNG.standard_normal((N, P))
+    y = RNG.standard_normal(N)
+    reg = GeoXGBMAERegressor(n_rounds=20, random_state=0)
+    assert isinstance(reg, GeoXGBRegressor)
+    assert reg.loss == 'absolute_error'
+    reg.fit(X, y)
+    assert reg.predict(X).shape == (N,)
+
+
+def test_loss_squared_error_uses_cpp():
+    from geoxgb._cpp_backend import _CPP_AVAILABLE
+    if not _CPP_AVAILABLE:
+        pytest.skip("C++ backend not available")
+    X = RNG.standard_normal((N, P))
+    y = RNG.standard_normal(N)
+    reg = GeoXGBRegressor(loss='squared_error', n_rounds=20, random_state=0)
+    reg.fit(X, y)
+    assert reg._cpp_model is not None
