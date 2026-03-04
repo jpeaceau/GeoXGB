@@ -2,6 +2,11 @@ import os
 import sys
 sys.path.insert(0, os.path.abspath('../../src'))
 
+# Mock the compiled C++ extension so Sphinx can import the package
+# on Read the Docs (where the extension is not compiled).
+from unittest.mock import MagicMock
+sys.modules['geoxgb._geoxgb_cpp'] = MagicMock()
+
 project   = 'GeoXGB'
 copyright = '2025, Jake Peace'
 author    = 'Jake Peace'
