@@ -384,22 +384,31 @@ from sklearn.model_selection import train_test_split
 
 X_tr, X_te, T_tr, T_te, Y_tr, Y_te = train_test_split(X, T, Y, test_size=0.25)
 
-# T-learner (recommended with PyramidHART defaults)
-m0 = GeoXGBRegressor(); m0.fit(X_tr[T_tr == 0], Y_tr[T_tr == 0])
-m1 = GeoXGBRegressor(); m1.fit(X_tr[T_tr == 1], Y_tr[T_tr == 1])
+# Use HVRT for causal inference — noise-invariant (Theorem 3)
+m0 = GeoXGBRegressor(partitioner='hvrt')
+m0.fit(X_tr[T_tr == 0], Y_tr[T_tr == 0])
+m1 = GeoXGBRegressor(partitioner='hvrt')
+m1.fit(X_tr[T_tr == 1], Y_tr[T_tr == 1])
 tau_hat = m1.predict(X_te) - m0.predict(X_te)
 ```
 
-PEHE benchmark on randomised trials, n=2000, T-learner / DR-learner best
-(lower is better):
+**Why HVRT for causal inference?** HVRT satisfies Theorem 3 (T-orthogonality):
+its cooperation measure is invariant to isotropic Gaussian covariate noise.
+PyramidHART loses this property — its L1-ball level sets are noise-sensitive,
+which degrades performance in observational settings with noisy covariates.
+The default `partitioner='pyramid_hart'` is optimal for regression; set
+`partitioner='hvrt'` when covariates have measurement error or when using
+S-learner-style metalearners that treat T as a feature alongside X.
 
-| τ(x) type | GeoXGB | XGBoost |
-|---|---|---|
-| Linear (2X₁ + 1) | **0.317** | 0.375 |
-| Nonlinear (2·sin(X₁π) + X₂²) | **0.590** | 0.572 |
+PEHE benchmark on randomised trials (lower is better, n=2000, best-of-metalearners):
 
-PyramidHART defaults (y\_weight=0.25, n\_rounds=500, learning\_rate=0.1, max\_depth=3).
-XGBoost: same lr/depth/rounds, default settings.
+| τ(x) type | GeoXGB (`hvrt`) | XGBoost | Honest R-forest¹ |
+|---|---|---|---|
+| Linear (2X₁ + 1) | **0.180** | 0.207 | 0.247 |
+| Nonlinear (2·sin(X₁π) + X₂²) | **0.408** | 0.608 | 0.796 |
+
+¹ 2-fold cross-fitted R-forest (functional core of GRF).
+Settings: n\_rounds=500, learning\_rate=0.1, max\_depth=3, y\_weight=0.25.
 
 ### Mediation fingerprint
 
@@ -407,8 +416,8 @@ The boost/partition importance ratio surfaces causal structure without a
 separate statistical test. Features that are causally *upstream* of Y (i.e.
 X where part of the effect passes through a mediator M) have
 `boost_imp >> partition_imp` — the gradient signal recognises X as important
-even when PyramidHART geometry anchors on M (pass `feature_types=[...]` to
-enable interpretability API):
+even when HVRT geometry anchors on M (pass `feature_types=[...]` to enable
+the interpretability API):
 
 ```python
 part  = model.partition_feature_importances(feature_names=names)
