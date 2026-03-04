@@ -1,0 +1,4 @@
+numpy
+scikit-learn
+hvrt>=2.6.1
+joblib
