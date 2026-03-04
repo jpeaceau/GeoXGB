@@ -612,9 +612,49 @@ Eigen::VectorXd GeoXGBBase::predict_raw(const Eigen::MatrixXd& X) const {
 // ── fit_boosting ──────────────────────────────────────────────────────────────
 
 void GeoXGBBase::fit_boosting(
-        const Eigen::MatrixXd& X,
-        const Eigen::VectorXd& y)
+        const Eigen::MatrixXd& X_arg,
+        const Eigen::VectorXd& y_arg)
 {
+    // ── Optional pre-subsampling for scalability ──────────────────────────────
+    // When max_resample_n > 0 and n exceeds it, randomly subsample to
+    // max_resample_n rows before fitting.  All downstream costs (HVRT fit,
+    // GBT tree training, predict-on-X gradient tracking) then scale with
+    // max_resample_n rather than full n.  Equivalent to XGBoost's subsample
+    // parameter, but applied once at fit start rather than per-round.
+    Eigen::MatrixXd X_sub_buf;
+    Eigen::VectorXd y_sub_buf;
+    const Eigen::MatrixXd* Xp = &X_arg;
+    const Eigen::VectorXd* yp = &y_arg;
+    if (cfg_.max_resample_n > 0 &&
+        static_cast<int>(X_arg.rows()) > cfg_.max_resample_n)
+    {
+        const int n_sub  = cfg_.max_resample_n;
+        const int n_full = static_cast<int>(X_arg.rows());
+        X_sub_buf.resize(n_sub, X_arg.cols());
+        y_sub_buf.resize(n_sub);
+        // Fisher-Yates partial shuffle using a simple LCG
+        std::vector<int> idx(n_full);
+        std::iota(idx.begin(), idx.end(), 0);
+        uint64_t lcg = static_cast<uint64_t>(cfg_.random_state) * 6364136223846793005ULL + 1442695040888963407ULL;
+        auto rng_bounded = [&](int range) -> int {
+            lcg = lcg * 6364136223846793005ULL + 1442695040888963407ULL;
+            return static_cast<int>((lcg >> 33) % static_cast<uint64_t>(range));
+        };
+        for (int i = 0; i < n_sub; ++i) {
+            int j = i + rng_bounded(n_full - i);
+            std::swap(idx[i], idx[j]);
+        }
+        for (int i = 0; i < n_sub; ++i) {
+            X_sub_buf.row(i) = X_arg.row(idx[i]);
+            y_sub_buf[i]     = y_arg[idx[i]];
+        }
+        Xp = &X_sub_buf;
+        yp = &y_sub_buf;
+    }
+    // Shadow the parameter names so all code below uses the (possibly subsampled) data.
+    const Eigen::MatrixXd& X = *Xp;
+    const Eigen::VectorXd& y = *yp;
+
     const int n = static_cast<int>(X.rows());
     const int d = static_cast<int>(X.cols());
 

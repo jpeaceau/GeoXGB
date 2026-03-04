@@ -36,7 +36,7 @@ class _GeoXGBBase:
         "feature_weights", "assignment_strategy", "tree_splitter",
         "refit_noise_floor", "noise_guard", "hvrt_params", "hvrt_tree_splitter",
         "hvrt_auto_reduce_threshold", "partitioner", "adaptive_reduce_ratio",
-        "loss",
+        "loss", "max_resample_n",
     )
 
     # Subclasses set this to True to enable class-conditional noise estimation
@@ -78,6 +78,7 @@ class _GeoXGBBase:
         hvrt_auto_reduce_threshold=None,
         partitioner='hvrt',
         adaptive_reduce_ratio=False,
+        max_resample_n=None,
     ):
         self.n_rounds = n_rounds
         self.learning_rate = learning_rate
@@ -113,6 +114,7 @@ class _GeoXGBBase:
         self.hvrt_auto_reduce_threshold = hvrt_auto_reduce_threshold
         self.partitioner = partitioner
         self.adaptive_reduce_ratio = adaptive_reduce_ratio
+        self.max_resample_n = max_resample_n
 
         # Fitted state
         self._trees = []
@@ -212,6 +214,16 @@ class _GeoXGBBase:
         """
         X = np.asarray(X, dtype=np.float64)
         y = np.asarray(y, dtype=np.float64).ravel()
+
+        # Pre-subsample for scalability: cap working set before HVRT and the
+        # boosting loop so that all downstream costs scale with max_resample_n
+        # rather than the full n.  Equivalent to XGBoost's subsample parameter
+        # but applied once at fit time rather than per-round.
+        if self.max_resample_n is not None and len(X) > self.max_resample_n:
+            rng = np.random.RandomState(self.random_state)
+            sub_idx = rng.choice(len(X), size=self.max_resample_n, replace=False)
+            X = X[sub_idx]
+            y = y[sub_idx]
 
         # Auto-reduce: when n exceeds the threshold, use HVRT (with its own
         # auto_tune) to select a representative subset before boosting begins.
