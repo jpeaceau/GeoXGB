@@ -276,3 +276,80 @@ def test_cooperation_tensor_symmetry():
                                    err_msg=f"Tensor not sym in (i,j) at s={s}")
         np.testing.assert_allclose(T[s], T[s].transpose(0, 2, 1), atol=1e-10,
                                    err_msg=f"Tensor not sym in (j,k) at s={s}")
+
+
+# ---------------------------------------------------------------------------
+# 10. local_model
+# ---------------------------------------------------------------------------
+
+# Deterministic synthetic dataset: y = 2*x1 + 3*x2 - x3 + 0.5*x1*x2 - 1.5*x2*x3
+_VALS = [0.0, 0.5, 1.0, 1.5, 2.0]
+_X_SYNTH = np.array([(x1, x2, x3) for x1 in _VALS for x2 in _VALS for x3 in _VALS],
+                    dtype=np.float64)
+_Y_SYNTH  = (2.0 * _X_SYNTH[:, 0] + 3.0 * _X_SYNTH[:, 1] - 1.0 * _X_SYNTH[:, 2]
+             + 0.5 * _X_SYNTH[:, 0] * _X_SYNTH[:, 1]
+             - 1.5 * _X_SYNTH[:, 1] * _X_SYNTH[:, 2])
+
+
+def _local_model_fixture():
+    reg = GeoXGBRegressor(
+        n_rounds=500, learning_rate=0.02, max_depth=3,
+        y_weight=0.25, refit_interval=50, random_state=0,
+    )
+    reg.fit(_X_SYNTH, _Y_SYNTH, feature_types=["continuous"] * 3)
+    return reg
+
+
+def test_local_model_return_keys():
+    reg = _local_model_fixture()
+    lm = reg.local_model(np.array([1.0, 1.0, 1.0]),
+                         feature_names=["x1", "x2", "x3"])
+    for key in ("intercept", "additive", "pairwise", "prediction",
+                "partition_size", "local_r2", "feature_names"):
+        assert key in lm, f"missing key: {key}"
+    assert lm["additive"].shape == (3,)
+    assert isinstance(lm["pairwise"], dict)
+    assert lm["partition_size"] >= 1
+    assert 0.0 <= lm["local_r2"] <= 1.0 + 1e-9
+
+
+def test_local_model_additive_signs():
+    # At x=[1,1,1]: df/dx1>0, df/dx2>0, df/dx3<0 — must hold in z-space too
+    reg = _local_model_fixture()
+    lm = reg.local_model(np.array([1.0, 1.0, 1.0]))
+    assert lm["additive"][0] > 0, "alpha_x1 should be positive"
+    assert lm["additive"][1] > 0, "alpha_x2 should be positive"
+    assert lm["additive"][2] < 0, "alpha_x3 should be negative"
+
+
+def test_local_model_pairwise_signs():
+    # Drop min_pair_coop to 0 to force all pairs into model
+    reg = _local_model_fixture()
+    lm = reg.local_model(np.array([1.0, 1.0, 1.0]), min_pair_coop=0.0)
+    # True: beta_12>0, beta_23<0
+    b12 = lm["pairwise"].get((0, 1), 0.0)
+    b23 = lm["pairwise"].get((1, 2), 0.0)
+    assert b12 > 0, f"beta_(x1,x2) should be positive, got {b12:.4f}"
+    assert b23 < 0, f"beta_(x2,x3) should be negative, got {b23:.4f}"
+
+
+def test_local_model_prediction_close_to_ensemble():
+    reg = _local_model_fixture()
+    x = np.array([1.0, 1.0, 1.0])
+    lm = reg.local_model(x)
+    ensemble_pred = float(reg.predict(x.reshape(1, -1))[0])
+    # local polynomial should approximate ensemble within reasonable tolerance
+    assert abs(lm["prediction"] - ensemble_pred) < 1.0, (
+        f"local_model prediction {lm['prediction']:.4f} too far from "
+        f"ensemble {ensemble_pred:.4f}"
+    )
+
+
+def test_local_model_requires_python_path():
+    from geoxgb._cpp_backend import _CPP_AVAILABLE
+    if not _CPP_AVAILABLE:
+        pytest.skip("C++ backend not available")
+    reg = GeoXGBRegressor(n_rounds=10, random_state=0)
+    reg.fit(_X_SYNTH, _Y_SYNTH)   # no feature_types → C++ path
+    with pytest.raises(RuntimeError):
+        reg.local_model(np.array([1.0, 1.0, 1.0]))
