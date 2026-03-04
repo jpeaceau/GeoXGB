@@ -64,6 +64,7 @@ _PYTHON_TO_CPP = {
     "method":                "reduce_method",
     "generation_strategy":   "generation_strategy",
     "adaptive_reduce_ratio": "adaptive_reduce_ratio",
+    "max_resample_n":        "max_resample_n",
 }
 
 

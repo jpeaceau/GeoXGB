@@ -150,3 +150,206 @@ def test_noise_estimate_not_fitted():
     reg = GeoXGBRegressor()
     with pytest.raises(RuntimeError):
         reg.noise_estimate()
+
+
+# ---------------------------------------------------------------------------
+# 7. cooperation_matrix
+# ---------------------------------------------------------------------------
+
+def test_cooperation_matrix_shape():
+    reg = _fitted_model()
+    X_test = RNG.standard_normal((10, P))
+    result = reg.cooperation_matrix(X_test, FEATURE_NAMES)
+    assert result["matrices"].shape == (10, P, P)
+    assert result["global_matrix"].shape == (P, P)
+    assert result["feature_names"] == FEATURE_NAMES
+    assert result["partitioner"] == reg.partitioner
+
+
+def test_cooperation_matrix_diagonal_ones():
+    reg = _fitted_model()
+    X_test = RNG.standard_normal((20, P))
+    result = reg.cooperation_matrix(X_test)
+    mats = result["matrices"]
+    for s in range(len(X_test)):
+        diag = np.diag(mats[s])
+        np.testing.assert_allclose(diag, np.ones(P), atol=0.01,
+                                   err_msg=f"Diagonal not 1 at sample {s}")
+
+
+def test_cooperation_matrix_symmetric():
+    reg = _fitted_model()
+    X_test = RNG.standard_normal((15, P))
+    result = reg.cooperation_matrix(X_test)
+    mats = result["matrices"]
+    for s in range(len(X_test)):
+        diff = np.abs(mats[s] - mats[s].T).max()
+        assert diff < 1e-10, f"Matrix not symmetric at sample {s}, max diff={diff}"
+    glob = result["global_matrix"]
+    assert np.abs(glob - glob.T).max() < 1e-10, "Global matrix not symmetric"
+
+
+def test_cooperation_matrix_bounded():
+    reg = _fitted_model()
+    X_test = RNG.standard_normal((30, P))
+    result = reg.cooperation_matrix(X_test)
+    mats = result["matrices"]
+    assert mats.min() >= -1.0 - 1e-9
+    assert mats.max() <=  1.0 + 1e-9
+
+
+def test_cooperation_matrix_requires_python_path():
+    # C++ path: no feature_types → no hvrt_model with X_z_
+    from geoxgb._cpp_backend import _CPP_AVAILABLE
+    if not _CPP_AVAILABLE:
+        pytest.skip("C++ backend not available")
+    X = RNG.standard_normal((N, P))
+    y = RNG.standard_normal(N)
+    reg = GeoXGBRegressor(n_rounds=10, random_state=0)
+    reg.fit(X, y)   # no feature_types → C++ path
+    X_test = RNG.standard_normal((5, P))
+    with pytest.raises(RuntimeError):
+        reg.cooperation_matrix(X_test)
+
+
+# ---------------------------------------------------------------------------
+# 8. cooperation_score
+# ---------------------------------------------------------------------------
+
+def test_cooperation_score_shape():
+    reg = _fitted_model()
+    X_test = RNG.standard_normal((20, P))
+    scores = reg.cooperation_score(X_test)
+    assert scores.shape == (20,)
+
+
+def test_cooperation_score_pyramid_hart_nonpositive():
+    # PyramidHART: A = |S| - ||z||_1 <= 0
+    X = RNG.standard_normal((N, P))
+    y = 3 * X[:, 0] - 2 * X[:, 1] + RNG.standard_normal(N) * 0.1
+    reg = GeoXGBRegressor(
+        n_rounds=20, partitioner='pyramid_hart', random_state=0
+    )
+    reg.fit(X, y, feature_types=["continuous"] * P)
+    X_test = RNG.standard_normal((50, P))
+    scores = reg.cooperation_score(X_test)
+    assert scores.max() <= 1e-9, (
+        f"PyramidHART cooperation scores should be <= 0, got max={scores.max():.4f}"
+    )
+
+
+def test_cooperation_score_hvrt_signed():
+    # HVRT: T can be positive or negative
+    X = RNG.standard_normal((N, P))
+    y = 3 * X[:, 0] - 2 * X[:, 1] + RNG.standard_normal(N) * 0.1
+    reg = GeoXGBRegressor(
+        n_rounds=20, partitioner='hvrt', random_state=0
+    )
+    reg.fit(X, y, feature_types=["continuous"] * P)
+    X_test = RNG.standard_normal((50, P))
+    scores = reg.cooperation_score(X_test)
+    # HVRT scores can be positive or negative — just check shape
+    assert scores.shape == (50,)
+
+
+# ---------------------------------------------------------------------------
+# 9. cooperation_tensor
+# ---------------------------------------------------------------------------
+
+def test_cooperation_tensor_shape():
+    reg = _fitted_model()
+    X_test = RNG.standard_normal((8, P))
+    result = reg.cooperation_tensor(X_test, FEATURE_NAMES)
+    assert result["tensor"].shape == (8, P, P, P)
+    assert result["global_tensor"].shape == (P, P, P)
+    assert result["feature_names"] == FEATURE_NAMES
+
+
+def test_cooperation_tensor_symmetry():
+    # T[s, i, j, k] should equal T[s, j, i, k] = T[s, i, k, j] (all permutations)
+    reg = _fitted_model()
+    X_test = RNG.standard_normal((5, P))
+    result = reg.cooperation_tensor(X_test)
+    T = result["tensor"]
+    for s in range(len(X_test)):
+        np.testing.assert_allclose(T[s], T[s].transpose(1, 0, 2), atol=1e-10,
+                                   err_msg=f"Tensor not sym in (i,j) at s={s}")
+        np.testing.assert_allclose(T[s], T[s].transpose(0, 2, 1), atol=1e-10,
+                                   err_msg=f"Tensor not sym in (j,k) at s={s}")
+
+
+# ---------------------------------------------------------------------------
+# 10. local_model
+# ---------------------------------------------------------------------------
+
+# Deterministic synthetic dataset: y = 2*x1 + 3*x2 - x3 + 0.5*x1*x2 - 1.5*x2*x3
+_VALS = [0.0, 0.5, 1.0, 1.5, 2.0]
+_X_SYNTH = np.array([(x1, x2, x3) for x1 in _VALS for x2 in _VALS for x3 in _VALS],
+                    dtype=np.float64)
+_Y_SYNTH  = (2.0 * _X_SYNTH[:, 0] + 3.0 * _X_SYNTH[:, 1] - 1.0 * _X_SYNTH[:, 2]
+             + 0.5 * _X_SYNTH[:, 0] * _X_SYNTH[:, 1]
+             - 1.5 * _X_SYNTH[:, 1] * _X_SYNTH[:, 2])
+
+
+def _local_model_fixture():
+    reg = GeoXGBRegressor(
+        n_rounds=500, learning_rate=0.02, max_depth=3,
+        y_weight=0.25, refit_interval=50, random_state=0,
+    )
+    reg.fit(_X_SYNTH, _Y_SYNTH, feature_types=["continuous"] * 3)
+    return reg
+
+
+def test_local_model_return_keys():
+    reg = _local_model_fixture()
+    lm = reg.local_model(np.array([1.0, 1.0, 1.0]),
+                         feature_names=["x1", "x2", "x3"])
+    for key in ("intercept", "additive", "pairwise", "prediction",
+                "partition_size", "local_r2", "feature_names"):
+        assert key in lm, f"missing key: {key}"
+    assert lm["additive"].shape == (3,)
+    assert isinstance(lm["pairwise"], dict)
+    assert lm["partition_size"] >= 1
+    assert 0.0 <= lm["local_r2"] <= 1.0 + 1e-9
+
+
+def test_local_model_additive_signs():
+    # At x=[1,1,1]: df/dx1>0, df/dx2>0, df/dx3<0 — must hold in z-space too
+    reg = _local_model_fixture()
+    lm = reg.local_model(np.array([1.0, 1.0, 1.0]))
+    assert lm["additive"][0] > 0, "alpha_x1 should be positive"
+    assert lm["additive"][1] > 0, "alpha_x2 should be positive"
+    assert lm["additive"][2] < 0, "alpha_x3 should be negative"
+
+
+def test_local_model_pairwise_signs():
+    # Drop min_pair_coop to 0 to force all pairs into model
+    reg = _local_model_fixture()
+    lm = reg.local_model(np.array([1.0, 1.0, 1.0]), min_pair_coop=0.0)
+    # True: beta_12>0, beta_23<0
+    b12 = lm["pairwise"].get((0, 1), 0.0)
+    b23 = lm["pairwise"].get((1, 2), 0.0)
+    assert b12 > 0, f"beta_(x1,x2) should be positive, got {b12:.4f}"
+    assert b23 < 0, f"beta_(x2,x3) should be negative, got {b23:.4f}"
+
+
+def test_local_model_prediction_close_to_ensemble():
+    reg = _local_model_fixture()
+    x = np.array([1.0, 1.0, 1.0])
+    lm = reg.local_model(x)
+    ensemble_pred = float(reg.predict(x.reshape(1, -1))[0])
+    # local polynomial should approximate ensemble within reasonable tolerance
+    assert abs(lm["prediction"] - ensemble_pred) < 1.0, (
+        f"local_model prediction {lm['prediction']:.4f} too far from "
+        f"ensemble {ensemble_pred:.4f}"
+    )
+
+
+def test_local_model_requires_python_path():
+    from geoxgb._cpp_backend import _CPP_AVAILABLE
+    if not _CPP_AVAILABLE:
+        pytest.skip("C++ backend not available")
+    reg = GeoXGBRegressor(n_rounds=10, random_state=0)
+    reg.fit(_X_SYNTH, _Y_SYNTH)   # no feature_types → C++ path
+    with pytest.raises(RuntimeError):
+        reg.local_model(np.array([1.0, 1.0, 1.0]))

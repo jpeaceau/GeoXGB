@@ -38,7 +38,6 @@ def _fit_class_worker(k, X, y_enc, params):
     random_state    = params["random_state"]
     lr_schedule     = params["lr_schedule"]
     class_weights   = params["class_weights"]   # ndarray (n_classes,) or None
-    cache_geometry  = params["cache_geometry"]
 
     hvrt_kw = dict(
         reduce_ratio     = params["reduce_ratio"],
@@ -72,7 +71,7 @@ def _fit_class_worker(k, X, y_enc, params):
         "n_expanded":       res.n_expanded,
     }]
 
-    hvrt_cache_k = res.hvrt_model if cache_geometry else None
+    hvrt_cache_k = None  # geometry always refreshed at each refit interval
 
     p_k       = np.clip(np.mean(yr), 1e-6, 1 - 1e-6)
     init_pred = float(np.log(p_k / (1 - p_k)))
@@ -311,7 +310,6 @@ class GeoXGBClassifier(_GeoXGBBase):
             random_state     = self.random_state,
             lr_schedule      = self.lr_schedule,
             class_weights    = self._class_weights,
-            cache_geometry   = self.cache_geometry,
             reduce_ratio     = self.reduce_ratio,
             expand_ratio     = self.expand_ratio,
             y_weight         = self.y_weight,
