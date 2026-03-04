@@ -16,6 +16,8 @@ struct PartitionKDEParams {
 
     // Continuous feature parameters
     std::vector<double> per_feature_std;  // std per continuous feature (Epanechnikov)
+    std::vector<double> per_feature_mad;  // 1.4826*MAD per feature (Laplace bandwidth)
+    Eigen::VectorXd     centroid_cont;    // colwise mean of X_cont (Laplace generation)
     Eigen::MatrixXd     cov_cholesky;     // Chol(h² * Sigma) for MultivariateKDE
     Eigen::MatrixXd     X_cont;           // training rows (n_p x d_cont)
 

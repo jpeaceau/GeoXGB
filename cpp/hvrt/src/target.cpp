@@ -51,6 +51,21 @@ Eigen::VectorXd compute_sum_target(const Eigen::MatrixXd& X_z) {
     return zscore(X_z.rowwise().sum());
 }
 
+Eigen::VectorXd compute_hart_target(const Eigen::MatrixXd& X_z) {
+    // T = 0.5*(||z||_1² − ||z||_2²) = Σ_{i<j} |z_i|·|z_j|  (O(n·d))
+    Eigen::VectorXd l1   = X_z.cwiseAbs().rowwise().sum();
+    Eigen::VectorXd l2sq = X_z.rowwise().squaredNorm();
+    return zscore(0.5 * (l1.array().square() - l2sq.array()).matrix());
+}
+
+Eigen::VectorXd compute_pyramid_target(const Eigen::MatrixXd& X_z) {
+    // A = |Σ z_i| − ||z||_1  (always ≤ 0; exactly 0 on coordinate hyperplanes)
+    // Degree-1 homogeneous → outlier cancellation: one 50σ spike → A shifts minimally
+    Eigen::VectorXd S  = X_z.rowwise().sum();
+    Eigen::VectorXd l1 = X_z.cwiseAbs().rowwise().sum();
+    return zscore((S.array().abs() - l1.array()).matrix());
+}
+
 Eigen::VectorXd blend_target(const Eigen::VectorXd& x_comp,
                               const Eigen::VectorXd& y,
                               double y_weight,

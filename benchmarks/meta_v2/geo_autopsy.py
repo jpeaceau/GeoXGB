@@ -48,8 +48,9 @@ Datasets
 
 from __future__ import annotations
 
-import os, sys, time, warnings
+import io, os, sys, time, warnings
 warnings.filterwarnings("ignore")
+sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding="utf-8", errors="replace")
 
 import numpy as np
 import pandas as pd

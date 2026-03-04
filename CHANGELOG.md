@@ -4,6 +4,138 @@ All notable changes to GeoXGB are documented here.
 
 ---
 
+## [0.2.0] — 2026-03-04
+
+### New features
+
+- **PyramidHART partitioner** (`partitioner='pyramid_hart'`) — new geometry
+  target `A = |S| − ‖z‖₁ ≤ 0` (triangle-inequality cooperation statistic).
+  Level sets are axis-aligned piecewise-linear surfaces representable
+  **exactly** by decision-tree splits, eliminating the structural mismatch
+  between HVRT's quadric-cone boundaries and the weak learner's axis-aligned
+  splits. Key properties: single-feature outlier cancellation (a 50σ spike
+  shifts A by ~0, vs 30× in HVRT), degree-1 homogeneity, and O(n·d) cost.
+  Selected as the new default across regression and classification benchmarks.
+
+- **HART partitioner** (`partitioner='hart'`) — absolute pairwise cooperation
+  `(‖z‖₁² − ‖z‖₂²)/2`, the L1 analog of HVRT's signed cooperation. Level
+  sets are cross-polytopes whose faces correspond to one of the 2^d orthants.
+  MAD-normalised y-extremeness and `criterion='absolute_error'` partition tree
+  make it robust to outlier gradients. O(n·d) via the algebraic identity.
+
+- **`HART`, `FastHART`, `PyramidHART` classes** exported from
+  `geoxgb._hart` and `import geoxgb` — drop-in HVRT replacements for
+  pipelines that use HVRT directly.
+
+- **C++ native backend** — HVRT is now also bundled as compiled C++ source
+  (Eigen3 + pybind11, fetched automatically at build time via CMake
+  `FetchContent`). The compiled extension `_geoxgb_cpp` exposes
+  `CppGeoXGBRegressor` and `CppGeoXGBClassifier`, which run the full
+  PyramidHART / HART / orthant-stratified / simplex-mixup / Laplace pipeline
+  in a single process without the Python overhead of repeated hvrt calls.
+  `partitioner`, `method`, and `generation_strategy` are all dispatched
+  natively in C++. The Python path (via `GeoXGBRegressor`) remains the
+  default; the C++ path is opt-in via `_cpp_backend.py` or direct import.
+
+- **orthant-stratified reduction** (`method='orthant_stratified'`) in both
+  Python and C++ backends — groups samples by the sign pattern of
+  `z − median(z)` (orthant key), allocates FPS budget proportional to each
+  orthant's MAD(y) weight, then selects geometrically spread representatives
+  within each orthant using L1 distance from the orthant centroid. Guarantees
+  coverage of all 2^d sign-consistent regions of the cooperation cone.
+
+- **simplex_mixup expansion** (`generation_strategy='simplex_mixup'`) — for
+  each synthetic sample, draws two random rows from the partition and takes a
+  uniform convex combination. Parameter-free, stays in the convex hull of
+  partition members, in-orthant by construction. Outperforms Laplace KDE and
+  Epanechnikov empirically on PyramidHART benchmarks.
+
+- **Laplace KDE expansion** (`generation_strategy='laplace'`) — per-feature
+  Laplace kernel centred on the partition centroid with 1.4826×MAD bandwidth.
+  More heavy-tailed than Epanechnikov; matches L1 geometry.
+
+- **`GeoXGBMAERegressor`** — L1-loss variant of `GeoXGBRegressor` optimised
+  for Mean Absolute Error. Uses `sign(y − pred)` gradients (L1 gradient),
+  median leaf values (`criterion='absolute_error'`), `partitioner='pyramid_hart'`
+  (exact tree-level-set alignment), `method='orthant_stratified'` (per-facet
+  FPS), `adaptive_reduce_ratio=True` (dynamic budget from gradient tail
+  heaviness), and `generation_strategy='simplex_mixup'`.
+
+- **`ConformalGeoXGBRegressor`** (experimental, `geoxgb.conformal`) —
+  split-conformal prediction intervals combining per-HVRT-partition residual
+  standard deviation with z-space k-NN density scaling. Provides calibrated
+  `P(y ∈ interval) ≥ 1 − α` guarantees under exchangeability. Not yet
+  exported from the top-level namespace; import directly from
+  `geoxgb.conformal`.
+
+### Default changes
+
+Updated for `GeoXGBRegressor` based on a 2 000+ trial Optuna TPE study
+(pyramid_hart, variance_ordered, simplex_mixup fixed; 12 continuous/discrete
+params; 4 datasets: diabetes, Friedman #1/#2, classification):
+
+- **`partitioner` default**: `'hvrt'` → `'pyramid_hart'`. Exact tree-level-set
+  alignment eliminates the quadric-boundary approximation error of HVRT.
+  Wins diabetes R²=0.3932 vs HVRT 0.3623; consistent with orthant geometry.
+
+- **`method` default**: (was already `'variance_ordered'` since 0.1.7) —
+  confirmed by Optuna as the top-performing reduction method with
+  `pyramid_hart`. Orthant-stratified ties on classification, variance-ordered
+  slightly ahead on regression.
+
+- **`max_depth` default**: `4` → `3`. Optuna finds depth 2–3 optimal across
+  all regression datasets; PyramidHART's polyhedral geometry is well-captured
+  at shallower depths because the level sets are already axis-aligned.
+
+- **`y_weight` default**: `0.5` → `0.25`. Optuna converges to 0.21–0.28
+  across diabetes and Friedman #1; lower values let the PyramidHART geometry
+  dominate over the y-extremeness component.
+
+- **`adaptive_reduce_ratio` default**: `True` → `False`. Grid search shows no
+  consistent benefit; disabled by default (enable for datasets with known
+  heavy-tailed gradients or when using `GeoXGBMAERegressor`).
+
+- **`generation_strategy` default**: `'epanechnikov'` → `'simplex_mixup'`.
+  Outperforms Epanechnikov on PyramidHART benchmarks; parameter-free and
+  stays in the convex hull.
+
+### Performance
+
+Head-to-head vs XGBoost (default vs default, same CV protocol, 3–5-fold):
+
+| Dataset | Metric | GeoXGB default | GeoXGB HPO-best | XGBoost (300 est.) | HPO vs XGB |
+|---|---|---|---|---|---|
+| diabetes | R² | 0.4675 | 0.4982 | 0.3147 | **+0.183** |
+| friedman1 | R² | 0.9210 | 0.9321 | 0.8434 | **+0.089** |
+| breast\_cancer | AUC | 0.9943 | 0.9926 | 0.9886 | **+0.004** |
+| wine | AUC | 0.9951 | 0.9993 | 0.9975 | **+0.002** |
+| digits (10-class) | AUC | 0.9988 | — | — | — |
+
+GeoXGB default beats XGBoost default on all 4 evaluated datasets. HPO-best
+params from Optuna (2 000+ trials, pyramid_hart + variance_ordered +
+simplex_mixup fixed): diabetes `lr=0.0125, max_depth=2, ri=200`;
+friedman1 `lr=0.0147, max_depth=3, ri=10`.
+
+### C++ micro-optimisations
+
+- `adaptive_reduce_ratio`: replaced `std::sort` (O(n log n)) with two
+  `std::nth_element` calls (O(n)) for the p50 and p90 order statistics.
+- `per_feature_mad` allocation in `Expander::fit_partition()` is now guarded
+  to only run when `strategy == GenerationStrategy::Laplace` (was computed
+  unconditionally, wasting 2d vector allocations per partition per refit).
+- `gen_laplace` centroid precomputed in `fit_partition()` and stored in
+  `PartitionKDEParams::centroid_cont`, eliminating a redundant
+  `X_cont.colwise().mean()` O(n_p × d) call per `generate()` invocation.
+
+### Dependency
+
+- **`hvrt >= 2.6.1` remains required** for the Python path partitioners
+  (`GeoXGBRegressor` default, `HART`, `FastHART`, `PyramidHART` classes).
+  The C++ backend (`CppGeoXGBRegressor`) bundles HVRT separately and does
+  not require the Python package at runtime.
+
+---
+
 ## [0.1.7] — 2026-02-27
 
 ### Licence

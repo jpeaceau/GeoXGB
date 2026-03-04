@@ -35,7 +35,7 @@ class _GeoXGBBase:
         "generation_strategy", "adaptive_bandwidth", "convergence_tol",
         "feature_weights", "assignment_strategy", "tree_splitter",
         "refit_noise_floor", "noise_guard", "hvrt_params", "hvrt_tree_splitter",
-        "hvrt_auto_reduce_threshold",
+        "hvrt_auto_reduce_threshold", "partitioner", "adaptive_reduce_ratio",
     )
 
     # Subclasses set this to True to enable class-conditional noise estimation
@@ -76,6 +76,8 @@ class _GeoXGBBase:
         hvrt_params=None,
         hvrt_tree_splitter=None,
         hvrt_auto_reduce_threshold=None,
+        partitioner='hvrt',
+        adaptive_reduce_ratio=False,
     ):
         self.n_rounds = n_rounds
         self.learning_rate = learning_rate
@@ -110,6 +112,8 @@ class _GeoXGBBase:
         self.hvrt_params = hvrt_params
         self.hvrt_tree_splitter = hvrt_tree_splitter
         self.hvrt_auto_reduce_threshold = hvrt_auto_reduce_threshold
+        self.partitioner = partitioner
+        self.adaptive_reduce_ratio = adaptive_reduce_ratio
 
         # Fitted state
         self._trees = []
@@ -157,6 +161,7 @@ class _GeoXGBBase:
             assignment_strategy=self.assignment_strategy,
             hvrt_params=self.hvrt_params,
             hvrt_tree_splitter=self.hvrt_tree_splitter,
+            partitioner=_ov.get("partitioner", self.partitioner),
         )
 
     # ------------------------------------------------------------------
@@ -328,7 +333,17 @@ class _GeoXGBBase:
                         preds = self._raw_predict(Xr)
                     # Xr, yr, self._train_n_resampled remain from last valid resample
                 else:
-                    res = self._do_resample(X, grads_orig, hvrt_cache=self._hvrt_cache)
+                    # Adaptive reduce ratio: heavier gradient tail → keep more samples
+                    _resample_overrides = None
+                    if self.adaptive_reduce_ratio and len(grads_orig) > 10:
+                        abs_g = np.abs(grads_orig)
+                        tail_ratio = np.percentile(abs_g, 90) / (np.median(abs_g) + 1e-12)
+                        adapt_delta = float(np.clip((tail_ratio - 1.5) / 20.0, 0.0, 0.15))
+                        _eff_reduce = min(self.reduce_ratio + adapt_delta, 1.0)
+                        if _eff_reduce != self.reduce_ratio:
+                            _resample_overrides = {"reduce_ratio": _eff_reduce}
+                    res = self._do_resample(X, grads_orig, hvrt_cache=self._hvrt_cache,
+                                            _overrides=_resample_overrides)
                     # Always update the noise tracker (even if we discard the geometry)
                     # so the next interval's skip-check uses the current signal level.
                     _last_refit_noise = res.noise_modulation

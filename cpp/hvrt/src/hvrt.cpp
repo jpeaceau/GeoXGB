@@ -16,19 +16,22 @@ HVRT::HVRT(HVRTConfig cfg) : cfg_(std::move(cfg)) {}
 // ── Parse enums ───────────────────────────────────────────────────────────────
 
 ReductionMethod HVRT::parse_reduction_method(const std::string& s) {
-    if (s == "centroid_fps" || s == "CentroidFPS") return ReductionMethod::CentroidFPS;
-    if (s == "medoid_fps"   || s == "MedoidFPS")   return ReductionMethod::MedoidFPS;
-    if (s == "variance"     || s == "VarianceOrdered") return ReductionMethod::VarianceOrdered;
-    if (s == "stratified"   || s == "Stratified")  return ReductionMethod::Stratified;
+    if (s == "centroid_fps"        || s == "CentroidFPS")      return ReductionMethod::CentroidFPS;
+    if (s == "medoid_fps"          || s == "MedoidFPS")        return ReductionMethod::MedoidFPS;
+    if (s == "variance"            || s == "VarianceOrdered")  return ReductionMethod::VarianceOrdered;
+    if (s == "stratified"          || s == "Stratified")       return ReductionMethod::Stratified;
+    if (s == "orthant_stratified"  || s == "OrthantStratified") return ReductionMethod::OrthantStratified;
     throw std::invalid_argument("Unknown reduction method: " + s);
 }
 
 GenerationStrategy HVRT::parse_generation_strategy(const std::string& s) {
-    if (s == "auto"          || s == "Auto")            return GenerationStrategy::Auto;
-    if (s == "epanechnikov"  || s == "Epanechnikov")    return GenerationStrategy::Epanechnikov;
+    if (s == "auto"             || s == "Auto")            return GenerationStrategy::Auto;
+    if (s == "epanechnikov"     || s == "Epanechnikov")    return GenerationStrategy::Epanechnikov;
     if (s == "multivariate_kde" || s == "MultivariateKDE") return GenerationStrategy::MultivariateKDE;
-    if (s == "bootstrap"     || s == "BootstrapNoise")  return GenerationStrategy::BootstrapNoise;
-    if (s == "copula"        || s == "UnivariateCopula") return GenerationStrategy::UnivariateCopula;
+    if (s == "bootstrap"        || s == "BootstrapNoise")  return GenerationStrategy::BootstrapNoise;
+    if (s == "copula"           || s == "UnivariateCopula") return GenerationStrategy::UnivariateCopula;
+    if (s == "simplex_mixup"    || s == "SimplexMixup")    return GenerationStrategy::SimplexMixup;
+    if (s == "laplace"          || s == "Laplace")         return GenerationStrategy::Laplace;
     throw std::invalid_argument("Unknown generation strategy: " + s);
 }
 
@@ -78,12 +81,22 @@ HVRT& HVRT::fit(
         X_binned.resize(n, 0);
     }
 
-    // 3. Target computation
+    // 3. Target computation (dispatch on partitioner_type)
     Eigen::VectorXd target_vec;
-    if (d <= 50) {
-        target_vec = compute_pairwise_target(X_z_);
-    } else {
-        target_vec = compute_sum_target(X_z_);
+    switch (cfg_.partitioner_type) {
+        case PartitionerType::HART:
+            target_vec = compute_hart_target(X_z_);
+            break;
+        case PartitionerType::FastHART:
+            target_vec = compute_sum_target(X_z_);
+            break;
+        case PartitionerType::PyramidHART:
+            target_vec = compute_pyramid_target(X_z_);
+            break;
+        default:  // HVRT
+            target_vec = (d <= 50) ? compute_pairwise_target(X_z_)
+                                   : compute_sum_target(X_z_);
+            break;
     }
 
     // ── Populate refit cache ───────────────────────────────────────────────────
@@ -111,7 +124,7 @@ HVRT& HVRT::fit(
     expander_.prepare(
         X_z_, partition_ids_,
         all_cols, /*cat_cols=*/{},
-        GenerationStrategy::Auto,
+        cfg_.gen_strategy,
         cfg_.bandwidth,
         cfg_.n_threads);
 
@@ -157,7 +170,7 @@ HVRT& HVRT::refit(std::optional<Eigen::VectorXd> y, double y_weight_override)
         expander_.prepare(
             X_z_, partition_ids_,
             all_cols, /*cat_cols=*/{},
-            GenerationStrategy::Auto,
+            cfg_.gen_strategy,
             cfg_.bandwidth,
             cfg_.n_threads);
     }

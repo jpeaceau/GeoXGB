@@ -5,6 +5,8 @@
 #include <cmath>
 #include <chrono>
 #include <cstdio>
+#include <map>
+#include <cstdint>
 #include "pcg_random.hpp"
 
 // ── Internal timing flag ──────────────────────────────────────────────────────
@@ -437,6 +439,162 @@ std::vector<int> stratified_select(const Eigen::MatrixXd& X_part, int budget,
     return std::vector<int>(indices.begin(), indices.begin() + budget);
 }
 
+// ── Orthant-stratified reduction ──────────────────────────────────────────────
+
+std::vector<int> orthant_stratified(
+    const Eigen::MatrixXd& X_z,
+    const Eigen::VectorXd& y,
+    int n_target,
+    int random_state)
+{
+    const int n = static_cast<int>(X_z.rows());
+    const int d = static_cast<int>(X_z.cols());
+
+    if (n <= 0 || d <= 0) return {};
+    n_target = std::clamp(n_target, 1, n);
+
+    // 1. Component-wise median of X_z
+    Eigen::VectorXd medians(d);
+    for (int j = 0; j < d; ++j) {
+        std::vector<double> col(n);
+        for (int i = 0; i < n; ++i) col[i] = X_z(i, j);
+        std::nth_element(col.begin(), col.begin() + n / 2, col.end());
+        if (n % 2 == 1) {
+            medians[j] = col[n / 2];
+        } else {
+            double upper = col[n / 2];
+            std::nth_element(col.begin(), col.begin() + n / 2 - 1, col.end());
+            medians[j] = 0.5 * (col[n / 2 - 1] + upper);
+        }
+    }
+
+    // 2. Assign orthant keys — sign(z_i − med_i), ties broken randomly
+    pcg64 rng(static_cast<uint64_t>(random_state));
+    std::uniform_int_distribution<int> coin(0, 1);
+
+    using Key = std::vector<int8_t>;
+    std::map<Key, std::vector<int>> orthant_map;
+
+    for (int i = 0; i < n; ++i) {
+        Key key(d);
+        for (int j = 0; j < d; ++j) {
+            double diff = X_z(i, j) - medians[j];
+            if (std::abs(diff) < 1e-10)
+                key[j] = static_cast<int8_t>(coin(rng) == 0 ? -1 : 1);
+            else
+                key[j] = static_cast<int8_t>(diff > 0 ? 1 : -1);
+        }
+        orthant_map[key].push_back(i);
+    }
+
+    // 3. Collect orthant groups and compute MAD-weighted budgets
+    const int n_orth = static_cast<int>(orthant_map.size());
+    std::vector<std::vector<int>> groups;
+    std::vector<double> weights;
+    groups.reserve(n_orth);
+    weights.reserve(n_orth);
+
+    for (auto& kv : orthant_map) {
+        const std::vector<int>& grp = kv.second;
+        groups.push_back(grp);
+
+        // MAD of y in this orthant
+        std::vector<double> yv;
+        yv.reserve(grp.size());
+        for (int idx : grp) yv.push_back(y[idx]);
+
+        std::nth_element(yv.begin(), yv.begin() + yv.size() / 2, yv.end());
+        double med_y = yv[yv.size() / 2];
+
+        std::vector<double> devs;
+        devs.reserve(yv.size());
+        for (double v : yv) devs.push_back(std::abs(v - med_y));
+        std::nth_element(devs.begin(), devs.begin() + devs.size() / 2, devs.end());
+        double mad = devs[devs.size() / 2];
+
+        weights.push_back(static_cast<double>(grp.size()) * (mad + 1e-12));
+    }
+
+    // 4. Proportional budget allocation with fractional-remainder rounding
+    double total_w = 0.0;
+    for (double w : weights) total_w += w;
+
+    std::vector<int> budgets(n_orth, 0);
+    std::vector<double> fracs(n_orth);
+    int allocated = 0;
+
+    for (int k = 0; k < n_orth; ++k) {
+        double exact = (total_w > 1e-12) ? (weights[k] / total_w * n_target)
+                                         : (static_cast<double>(n_target) / n_orth);
+        int fv = static_cast<int>(std::floor(exact));
+        budgets[k] = std::min(fv, static_cast<int>(groups[k].size()));
+        allocated += budgets[k];
+        fracs[k] = exact - std::floor(exact);
+    }
+
+    // Give remainder to partitions with largest fractional remainders
+    int diff = n_target - allocated;
+    if (diff > 0) {
+        std::vector<int> order(n_orth);
+        std::iota(order.begin(), order.end(), 0);
+        std::partial_sort(order.begin(),
+                          order.begin() + std::min(diff, n_orth),
+                          order.end(),
+                          [&](int a, int b) { return fracs[a] > fracs[b]; });
+        for (int i = 0; i < diff && i < n_orth; ++i) {
+            int k = order[i];
+            if (budgets[k] < static_cast<int>(groups[k].size()))
+                ++budgets[k];
+        }
+    }
+
+    // 5. Within-orthant selection: L1-dist from centroid, sort descending,
+    //    select at linearly-spaced positions (even coverage farthest→nearest)
+    std::vector<int> result;
+    result.reserve(n_target);
+
+    for (int k = 0; k < n_orth; ++k) {
+        const std::vector<int>& grp = groups[k];
+        int gs  = static_cast<int>(grp.size());
+        int bud = budgets[k];
+
+        if (bud <= 0) continue;
+        if (bud >= gs) {
+            for (int idx : grp) result.push_back(idx);
+            continue;
+        }
+
+        // Centroid of orthant rows
+        Eigen::VectorXd centroid = Eigen::VectorXd::Zero(d);
+        for (int idx : grp) centroid += X_z.row(idx).transpose();
+        centroid /= gs;
+
+        // L1 distance from centroid for each row
+        std::vector<std::pair<double, int>> dists;
+        dists.reserve(gs);
+        for (int gi = 0; gi < gs; ++gi) {
+            double l1 = (X_z.row(grp[gi]).transpose() - centroid).cwiseAbs().sum();
+            dists.emplace_back(l1, gi);
+        }
+
+        // Sort descending (farthest first) for maximal spread
+        std::sort(dists.begin(), dists.end(),
+                  [](const auto& a, const auto& b) { return a.first > b.first; });
+
+        // Pick bud samples at linearly-spaced positions in the sorted list
+        for (int b = 0; b < bud; ++b) {
+            int pos = (bud > 1)
+                ? static_cast<int>(std::round(static_cast<double>(b) * (gs - 1) / (bud - 1)))
+                : 0;
+            pos = std::clamp(pos, 0, gs - 1);
+            result.push_back(grp[dists[pos].second]);
+        }
+    }
+
+    std::sort(result.begin(), result.end());
+    return result;
+}
+
 // ── Top-level reduce ──────────────────────────────────────────────────────────
 
 std::vector<int> reduce(
@@ -493,6 +651,11 @@ std::vector<int> reduce(
         case ReductionMethod::Stratified:
             local_sel = stratified_select(X_part, bud,
                                           static_cast<uint64_t>(random_state) + p);
+            break;
+        case ReductionMethod::OrthantStratified:
+            // Requires y — falls back to variance_ordered when called without y.
+            // For y-aware calls use hvrt::orthant_stratified() directly.
+            local_sel = variance_ordered(X_part, bud);
             break;
         }
 

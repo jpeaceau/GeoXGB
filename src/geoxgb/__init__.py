@@ -1,7 +1,8 @@
-from geoxgb.regressor import GeoXGBRegressor
+from geoxgb.regressor import GeoXGBRegressor, GeoXGBMAERegressor
 from geoxgb.classifier import GeoXGBClassifier
 from geoxgb.gardener import Gardener
 from geoxgb import report
+from geoxgb._hart import HART, FastHART, PyramidHART
 from geoxgb.explain import (
     GeoXGBExplainer,
     Explanation,
@@ -16,14 +17,16 @@ from geoxgb.explain import (
 
 try:
     from geoxgb.optimizer import GeoXGBOptimizer
-    __all__ = ["GeoXGBRegressor", "GeoXGBClassifier", "GeoXGBOptimizer",
-               "Gardener", "load_model", "report",
+    __all__ = ["GeoXGBRegressor", "GeoXGBMAERegressor", "GeoXGBClassifier",
+               "GeoXGBOptimizer", "Gardener", "load_model", "report",
+               "HART", "FastHART", "PyramidHART",
                "GeoXGBExplainer", "Explanation", "PathNode", "Neighbour",
                "PartitionGeometry", "format_explanation", "print_explanation",
                "format_summary", "print_summary"]
 except ImportError:
-    __all__ = ["GeoXGBRegressor", "GeoXGBClassifier", "Gardener",
-               "load_model", "report",
+    __all__ = ["GeoXGBRegressor", "GeoXGBMAERegressor", "GeoXGBClassifier",
+               "Gardener", "load_model", "report",
+               "HART", "FastHART", "PyramidHART",
                "GeoXGBExplainer", "Explanation", "PathNode", "Neighbour",
                "PartitionGeometry", "format_explanation", "print_explanation",
                "format_summary", "print_summary"]
@@ -51,4 +54,4 @@ def load_model(path):
     return joblib.load(path)
 
 
-__version__ = "0.1.4"
+__version__ = "0.2.0"
