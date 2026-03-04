@@ -29,11 +29,25 @@ from what works for another.
 
 - `auto_noise`, `noise_guard`, `refit_noise_floor` — noise modulation defaults
   are well-tuned; disabling them removes robustness guarantees.
-- `partitioner`, `method`, `generation_strategy` — geometric pipeline defaults
-  are the Optuna-optimised combination. Mismatching them (e.g. `method='orthant_stratified'`
-  without `partitioner='pyramid_hart'`) silently degrades performance.
+- `method`, `generation_strategy` — the default pipeline (`variance_ordered` +
+  `simplex_mixup`) is the Optuna-optimised combination. Mismatching these with
+  the wrong partitioner (e.g. `method='orthant_stratified'` without
+  `partitioner='pyramid_hart'`) silently degrades performance.
 - `tree_splitter`, `tree_criterion`, `variance_weighted` — minor effects;
   only tune after everything else is locked in.
+
+### Prefer HVRT when accuracy is comparable
+
+After completing HPO, re-run evaluation with `partitioner='hvrt'` and compare
+accuracy. If HVRT is within a few tenths of a percent of PyramidHART, **use
+HVRT** — its noise-invariance guarantee (Theorem 3) means it will generalise
+more robustly when production data contains more measurement noise than the
+training set. PyramidHART is the default for speed, not because it is
+categorically better.
+
+HVRT is also preferable on **imbalanced datasets**, where its variance-weighted
+quadric geometry tends to give minority regions better partition coverage than
+PyramidHART's polyhedral level sets.
 
 ---
 
