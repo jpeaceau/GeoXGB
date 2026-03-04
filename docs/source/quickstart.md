@@ -32,10 +32,28 @@ labels = clf.predict(X_test)
 
 ## MAE Regression
 
-For tasks where mean absolute error matters more than RMSE:
+For tasks where mean absolute error matters more than RMSE, set
+``loss='absolute_error'``.  For best results, also set the
+MAE-optimal companion parameters:
 
 ```python
-from geoxgb import GeoXGBMAERegressor
+from geoxgb import GeoXGBRegressor
+
+model = GeoXGBRegressor(
+    loss='absolute_error',
+    max_depth=4,
+    y_weight=0.5,
+    method='orthant_stratified',
+    adaptive_reduce_ratio=True,
+)
+model.fit(X_train, y_train)
+```
+
+``GeoXGBMAERegressor`` is still available as a backward-compatible alias
+that pre-sets all of the above defaults:
+
+```python
+from geoxgb import GeoXGBMAERegressor   # returns a GeoXGBRegressor
 
 model = GeoXGBMAERegressor()
 model.fit(X_train, y_train)
