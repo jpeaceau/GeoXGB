@@ -232,16 +232,20 @@ def main():
     ap.add_argument("--partitioner", type=str, default="pyramid_hart",
                     choices=["pyramid_hart", "hvrt", "hart", "fasthvrt"],
                     help="GeoXGB partitioner to use across all trials")
+    ap.add_argument("--min-n", type=int, default=0,
+                    help="Skip datasets with fewer than this many samples")
     args = ap.parse_args()
 
     # Inject partitioner into the fixed trial params so all models use it
     _TRIAL_FIXED["partitioner"] = args.partitioner
 
-    datasets = load_datasets(args.seed)
+    datasets = [(n, X, y, t) for n, X, y, t in load_datasets(args.seed)
+                if len(X) >= args.min_n]
 
     _p(f"\n{'='*72}")
+    min_n_str = f", min_n={args.min_n}" if args.min_n > 0 else ""
     _p(f"cv=1 vs cv=3 HPO ranking study  --  {args.n_trials} trials, "
-       f"seed={args.seed}, partitioner={args.partitioner}")
+       f"seed={args.seed}, partitioner={args.partitioner}{min_n_str}")
     _p(f"NOTE: convergence_tol disabled to avoid training-set-size confound.")
     _p(f"{'='*72}")
     _p(f"  {'Dataset':<20}  {'tau':>6}  {'rho':>6}  {'top3':>5}  {'best1':>6}  "
