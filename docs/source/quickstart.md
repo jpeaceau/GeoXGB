@@ -70,16 +70,24 @@ from geoxgb import load_model
 model = load_model("my_model.pkl")
 ```
 
-## Causal Inference
+## Choosing a partitioner
 
-For causal inference and treatment effect estimation, use the HVRT partitioner
-explicitly. HVRT satisfies Theorem 3 (T⊥Q orthogonality) which makes partitions
-invariant to isotropic Gaussian covariate noise — a critical property when
-treatment assignment is correlated with covariates.
+The default `partitioner='pyramid_hart'` is fast and works well in most cases.
+However, consider switching to `'hvrt'` in any of these situations:
+
+- **Comparable accuracy:** if both partitioners score similarly on your dataset,
+  prefer `'hvrt'` — its noise-invariance guarantee (Theorem 3) means it
+  generalises more robustly when production data is noisier than training data.
+- **Imbalanced datasets:** HVRT's variance-weighted quadric geometry gives
+  minority regions better partition coverage than PyramidHART's polyhedral
+  level sets.
+- **Causal inference:** always use `'hvrt'`. The T⊥Q orthogonality guarantee
+  is critical for unbiased treatment effect estimation.
 
 ```python
+# Prefer HVRT when accuracy is close, for noise-invariance
 model = GeoXGBRegressor(partitioner='hvrt')
-```
 
-PyramidHART (the regression default) sacrifices this noise-invariance for faster
-geometry computation. For causal applications, always use `partitioner='hvrt'`.
+# Always use HVRT for causal inference
+causal_model = GeoXGBRegressor(partitioner='hvrt')
+```

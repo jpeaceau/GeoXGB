@@ -111,17 +111,46 @@ Which geometric partitioner to use for sample curation.
 | Value | Geometry | Best for |
 |---|---|---|
 | `'pyramid_hart'` | Axis-aligned polyhedral (cross-polytope) level sets; `A = \|S\| − ‖z‖₁` | General regression and classification (default) |
-| `'hvrt'` | Smooth quadric level sets; variance-based; satisfies T⊥Q noise-invariance (Theorem 3) | **Causal inference**, treatment effect estimation |
+| `'hvrt'` | Smooth quadric level sets; variance-based; satisfies T⊥Q noise-invariance (Theorem 3) | Causal inference; imbalanced datasets; noise-sensitive tasks |
 | `'hart'` | MAD-based HVRT variant; L1-natural geometry | MAE regression, heavy-tailed data |
 | `'fasthvrt'` | Linear approximation of HVRT target; O(n·d) | Very large datasets where HVRT is too slow |
 
-**Recommendation:** leave at `'pyramid_hart'` for regression and classification.
-Switch to `'hvrt'` for any causal inference application — HVRT's
-T⊥Q orthogonality guarantee means partitions are invariant to covariate noise
-in the treatment assignment, which is critical for unbiased effect estimation.
+**PyramidHART vs HVRT — when to switch:**
 
-**Advanced only.** Changing this parameter without understanding the geometric
-implications typically hurts performance.
+`'pyramid_hart'` is the default because its axis-aligned polyhedral geometry
+is fast to compute and well-matched to axis-aligned decision tree splits.
+However, HVRT has two properties that make it the better choice in specific
+situations:
+
+1. **Imbalanced datasets.** HVRT's variance-weighted quadric geometry tends to
+   produce more balanced partition sizes than PyramidHART's polyhedral level
+   sets. On datasets where one class or target region is heavily
+   under-represented, HVRT partitions are more likely to give minority regions
+   adequate geometric coverage. If you observe that PyramidHART partitions
+   consistently collapse the minority region into a single large partition,
+   switch to `'hvrt'`.
+
+2. **Noise-invariance (Theorem 3).** HVRT satisfies T⊥Q orthogonality, which
+   means partition geometry is invariant to isotropic Gaussian covariate noise.
+   PyramidHART does not have this guarantee — its geometry can degrade when
+   features contain substantial measurement noise. `auto_noise` and
+   `noise_guard` partially compensate for this, but they are heuristics, not
+   guarantees.
+
+**General recommendation:** if both `'pyramid_hart'` and `'hvrt'` yield
+similar accuracy on your dataset, **prefer `'hvrt'`**. The noise-invariance
+guarantee means the model will generalise more robustly when new data contains
+more noise than training data, or when feature measurement conditions vary.
+PyramidHART is the default purely for its speed advantage; that advantage
+disappears the moment HVRT is competitive.
+
+**Causal inference:** always use `'hvrt'`. The T⊥Q guarantee is critical for
+unbiased treatment effect estimation when treatment assignment is correlated
+with covariates.
+
+**Advanced only.** Avoid mixing partitioners with mismatched reduction methods
+(e.g. `method='orthant_stratified'` is designed for pyramid geometry and will
+underperform with `'hvrt'`).
 
 ---
 
