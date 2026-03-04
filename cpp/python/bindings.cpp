@@ -51,6 +51,7 @@ PYBIND11_MODULE(_geoxgb_cpp, m) {
         .def_readwrite("reduce_method",         &GeoXGBConfig::reduce_method)
         .def_readwrite("generation_strategy",   &GeoXGBConfig::generation_strategy)
         .def_readwrite("adaptive_reduce_ratio", &GeoXGBConfig::adaptive_reduce_ratio)
+        .def_readwrite("max_resample_n",        &GeoXGBConfig::max_resample_n)
         .def("__repr__", [](const GeoXGBConfig& c) {
             return "<GeoXGBConfig n_rounds=" + std::to_string(c.n_rounds) +
                    " lr=" + std::to_string(c.learning_rate) +

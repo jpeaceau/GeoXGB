@@ -68,6 +68,13 @@ class GeoXGBRegressor(_GeoXGBBase):
     adaptive_reduce_ratio : bool, default=False
         Dynamically increase reduce_ratio for heavy-tailed gradients.
         Recommended with ``loss='absolute_error'``.
+    max_resample_n : int or None, default=None
+        If set, randomly subsample the training data to at most this many
+        samples before fitting.  Caps all downstream costs (HVRT partition
+        fitting, gradient tracking, GBT tree training) proportionally.
+        Recommended for n > 20 000: ``max_resample_n=10_000`` brings
+        training time close to XGBoost's default while retaining GeoXGB's
+        geometric advantages on the representative subset.
     random_state : int, default=42
     """
 
@@ -108,6 +115,7 @@ class GeoXGBRegressor(_GeoXGBBase):
         hvrt_auto_reduce_threshold=None,
         partitioner='pyramid_hart',
         adaptive_reduce_ratio=False,
+        max_resample_n=None,
     ):
         if loss not in ('squared_error', 'absolute_error'):
             raise ValueError(
@@ -149,6 +157,7 @@ class GeoXGBRegressor(_GeoXGBBase):
             hvrt_auto_reduce_threshold=hvrt_auto_reduce_threshold,
             partitioner=partitioner,
             adaptive_reduce_ratio=adaptive_reduce_ratio,
+            max_resample_n=max_resample_n,
         )
 
     def fit(self, X, y, feature_types=None):

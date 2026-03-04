@@ -83,6 +83,13 @@ struct GeoXGBConfig {
     // Adaptive reduce ratio: increase reduce_ratio for heavy-tailed gradient distributions
     bool        adaptive_reduce_ratio = false;
 
+    // Scalability: cap working set at fit start.
+    // -1 = disabled; > 0 → randomly subsample X to max_resample_n rows before
+    // fitting.  All downstream costs (HVRT fit, GBT training, predict-on-X
+    // gradient tracking) then scale with max_resample_n rather than full n.
+    // Recommended for n > 20 000: set to 10 000–50 000.
+    int    max_resample_n     = -1;
+
     // Misc
     int    random_state       = 42;
     bool   variance_weighted  = true;
