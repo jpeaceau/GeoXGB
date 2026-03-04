@@ -146,7 +146,7 @@ opt = GeoXGBOptimizer(task="regression", n_trials=200, cv=5, random_state=42)
 opt.fit(X_train, y_train)
 
 print(opt.best_params_)
-model = opt.best_estimator_
+model = opt.best_model_
 ```
 
 Requires `pip install geoxgb[optimizer]` (installs Optuna).

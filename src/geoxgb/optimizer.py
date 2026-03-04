@@ -110,22 +110,38 @@ class GeoXGBOptimizer:
 
     # ------------------------------------------------------------------
     # Regression: warm-start defaults + search space
+    #
+    # Warm-start defaults match GeoXGBRegressor constructor defaults so
+    # trial 0 is guaranteed to be at least as good as the out-of-box model.
+    #
+    # Search space covers the empirically-validated ranges from 2 000+
+    # Optuna TPE trials across diabetes and Friedman-1 benchmarks:
+    #   - learning_rate: log-spaced 0.005–0.05 (optimal 0.010–0.020)
+    #   - max_depth: 2–5 (depth 2 is empirical rank-1 on diabetes)
+    #   - reduce_ratio: 0.3–0.95 (large dataset-dependent variation)
+    #   - refit_interval: 10–200 (diabetes optimal = 200, Friedman-1 = 10)
+    #   - expand_ratio: 0.0–0.3 (secondary; most impactful on small n)
+    #   - y_weight: 0.1–0.5 (Optuna consistently finds 0.21–0.28 optimal)
     # ------------------------------------------------------------------
 
     _DEFAULTS_REGRESSION = {
         "n_rounds":       1000,
-        "learning_rate":  0.2,
-        "max_depth":      4,
-        "refit_interval": 20,
-        "y_weight":       0.5,
+        "learning_rate":  0.02,
+        "max_depth":      3,
+        "reduce_ratio":   0.8,
+        "refit_interval": 50,
+        "expand_ratio":   0.1,
+        "y_weight":       0.25,
     }
 
     _SEARCH_SPACE_REGRESSION = {
-        "n_rounds":       [100, 200, 500, 1000, 2000],
-        "learning_rate":  [0.05, 0.1, 0.15, 0.2, 0.3],
-        "max_depth":      [3, 4, 5, 6],
-        "refit_interval": [10, 20, 50],
-        "y_weight":       [0.1, 0.3, 0.5, 0.7, 0.9],
+        "n_rounds":       [500, 1000, 1500, 2000, 3000],
+        "learning_rate":  [0.005, 0.008, 0.01, 0.015, 0.02, 0.03, 0.05],
+        "max_depth":      [2, 3, 4, 5],
+        "reduce_ratio":   [0.3, 0.5, 0.6, 0.7, 0.8, 0.9, 0.95],
+        "refit_interval": [10, 20, 50, 100, 200],
+        "expand_ratio":   [0.0, 0.05, 0.1, 0.2, 0.3],
+        "y_weight":       [0.1, 0.15, 0.2, 0.25, 0.3, 0.4, 0.5],
     }
 
     # ------------------------------------------------------------------
@@ -135,22 +151,24 @@ class GeoXGBOptimizer:
 
     _DEFAULTS_CLASSIFICATION = {
         "n_rounds":       1000,
-        "learning_rate":  0.2,
-        "max_depth":      4,
-        "refit_interval": 20,
-        "y_weight":       0.5,
+        "learning_rate":  0.02,
+        "max_depth":      3,
+        "reduce_ratio":   0.8,
+        "refit_interval": 50,
+        "expand_ratio":   0.1,
+        "y_weight":       0.25,
         "class_weight":   None,
-        "expand_ratio":   0.0,
     }
 
     _SEARCH_SPACE_CLASSIFICATION = {
-        "n_rounds":       [100, 200, 500, 1000, 2000],
-        "learning_rate":  [0.05, 0.1, 0.15, 0.2, 0.3],
-        "max_depth":      [3, 4, 5, 6],
-        "refit_interval": [10, 20, 50],
-        "y_weight":       [0.1, 0.3, 0.5, 0.7, 0.9],
+        "n_rounds":       [500, 1000, 1500, 2000, 3000],
+        "learning_rate":  [0.005, 0.008, 0.01, 0.015, 0.02, 0.03, 0.05],
+        "max_depth":      [2, 3, 4, 5, 6],
+        "reduce_ratio":   [0.3, 0.5, 0.6, 0.7, 0.8, 0.9, 0.95],
+        "refit_interval": [10, 20, 50, 100, 200],
+        "expand_ratio":   [0.0, 0.05, 0.1, 0.2, 0.3],
+        "y_weight":       [0.1, 0.15, 0.2, 0.25, 0.3, 0.4, 0.5, 0.6],
         "class_weight":   [None, "balanced"],
-        "expand_ratio":   [0.0, 0.1, 0.3, 0.5],
     }
 
     # ------------------------------------------------------------------
