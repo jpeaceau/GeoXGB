@@ -21,6 +21,7 @@ Makefile
 benchmarks/results/
 benchmarks/__pycache__/
 data/*.csv
+data/*.pkl
 insights/
 
 # IDE
