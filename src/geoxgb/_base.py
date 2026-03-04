@@ -845,6 +845,166 @@ class _GeoXGBBase:
             "partitioner":   self.partitioner,
         }
 
+    def local_model(self, x, feature_names=None, min_pair_coop=0.10, alpha=1e-3):
+        """
+        Fit a local additive + multiplicative polynomial at sample *x*.
+
+        Identifies the training partition that *x* belongs to, then fits a
+        ridge-regularised polynomial on those training points:
+
+            f̂(z|P) ≈ a₀
+                     + Σᵢ        αᵢ · zᵢ
+                     + Σᵢ<ⱼ      βᵢⱼ · zᵢ · zⱼ   (only pairs |Cᵢⱼ| ≥ min_pair_coop)
+
+        where z = z-scores (the partition's natural coordinate system) and the
+        regression targets are the **ensemble predictions** at the training
+        points in partition P.
+
+        This provides per-sample, locally-valid additive + multiplicative
+        coefficients grounded in the cooperation geometry — something neither
+        SHAP (additive only) nor EBM (global only) provides.
+
+        Requires a Python-path fit: pass ``feature_types`` to ``fit()``.
+
+        Parameters
+        ----------
+        x : array-like of shape (n_features,)
+            A single sample.
+        feature_names : list of str, optional
+        min_pair_coop : float, default=0.10
+            Include pairwise term (i, j) only if |Cᵢⱼ(P)| ≥ this threshold.
+            Higher values = sparser, more interpretable model.
+        alpha : float, default=1e-3
+            Ridge regularisation strength.  Used to stabilise small partitions.
+
+        Returns
+        -------
+        dict with keys:
+
+        ``'intercept'`` : float
+            Constant term (partition mean of ensemble predictions).
+
+        ``'additive'`` : ndarray, shape (n_features,)
+            αᵢ — linear coefficient for feature i in z-space.
+
+        ``'pairwise'`` : dict {(i, j): float}
+            βᵢⱼ — multiplicative coefficient for each cooperation-active pair.
+            Key is (i, j) with i < j.
+
+        ``'prediction'`` : float
+            Local polynomial evaluated at x's z-score (should approximate
+            ``model.predict([x])``).
+
+        ``'partition_size'`` : int
+            Number of training points in the local partition.
+
+        ``'local_r2'`` : float
+            R² of the polynomial on the partition training points.
+            Near 1.0 means the partition is well approximated by this polynomial.
+
+        ``'feature_names'`` : list of str
+
+        Raises
+        ------
+        RuntimeError
+            If fitted via C++ path or if the model was saved/loaded.
+        """
+        self._check_fitted()
+        if not self._resample_history:
+            raise RuntimeError(
+                "local_model() requires a Python-path fit. "
+                "Pass feature_types=[...] to fit() to use the Python backend."
+            )
+        last = self._resample_history[-1]
+        hvrt_model = last["hvrt_model"]
+        if (hvrt_model is None
+                or not hasattr(hvrt_model, 'X_z_')
+                or hvrt_model.X_z_ is None):
+            raise RuntimeError(
+                "local_model() requires a Python-path fit with geometry intact. "
+                "Pass feature_types=[...] to fit(), and do not call save()/load()."
+            )
+
+        x = np.asarray(x, dtype=np.float64).ravel()
+        d = self._n_features
+        if feature_names is None:
+            feature_names = [f"x{i}" for i in range(d)]
+
+        # ── locate partition ──────────────────────────────────────────────
+        X_z_train = hvrt_model.X_z_          # (n_train, d)
+        X_orig    = hvrt_model.X_             # (n_train, d)
+        part_ids  = hvrt_model.partition_ids_ # (n_train,)
+
+        x_z      = hvrt_model._to_z(x.reshape(1, -1))[0]   # (d,)
+        leaf      = int(hvrt_model.tree_.apply(
+            x_z.reshape(1, -1).astype(np.float32)
+        )[0])
+        mask      = part_ids == leaf
+        n_p       = int(mask.sum())
+
+        Z_p   = X_z_train[mask]    # (n_p, d) — z-scores in partition
+        X_p   = X_orig[mask]       # (n_p, d) — original X in partition
+
+        # ── ensemble predictions as regression targets ────────────────────
+        y_hat_p = self._raw_predict(X_p)    # (n_p,)
+
+        # ── cooperation matrix for pair selection ─────────────────────────
+        if n_p >= 2:
+            Z_c  = Z_p - Z_p.mean(axis=0, keepdims=True)
+            std  = Z_c.std(axis=0)
+            std[std < 1e-10] = 1.0
+            Z_n  = Z_c / std
+            C_p  = (Z_n.T @ Z_n) / n_p       # (d, d) Pearson corr
+        else:
+            C_p  = np.eye(d)
+
+        # active pairs (upper triangle, |coop| >= threshold)
+        pairs = [(i, j) for i in range(d) for j in range(i + 1, d)
+                 if abs(C_p[i, j]) >= min_pair_coop]
+
+        # ── design matrix in z-space ──────────────────────────────────────
+        # columns: [1, z_0, ..., z_{d-1}, z_i*z_j for active pairs]
+        n_cols = 1 + d + len(pairs)
+        M      = np.empty((n_p, n_cols))
+        M[:, 0] = 1.0
+        M[:, 1:1 + d] = Z_p
+        for col, (i, j) in enumerate(pairs, start=1 + d):
+            M[:, col] = Z_p[:, i] * Z_p[:, j]
+
+        # ── ridge regression: θ = (MᵀM + αI)⁻¹ Mᵀ y_hat ─────────────────
+        A   = M.T @ M + alpha * np.eye(n_cols)
+        b   = M.T @ y_hat_p
+        theta = np.linalg.solve(A, b)
+
+        intercept   = float(theta[0])
+        additive    = theta[1:1 + d]
+        pairwise    = {(i, j): float(theta[1 + d + col])
+                       for col, (i, j) in enumerate(pairs)}
+
+        # ── evaluate at x's z-score ───────────────────────────────────────
+        m_x     = np.empty(n_cols)
+        m_x[0]  = 1.0
+        m_x[1:1 + d] = x_z
+        for col, (i, j) in enumerate(pairs, start=1 + d):
+            m_x[col] = x_z[i] * x_z[j]
+        prediction = float(m_x @ theta)
+
+        # ── local R² (polynomial quality on partition) ────────────────────
+        y_pred_p = M @ theta
+        ss_res   = float(np.sum((y_hat_p - y_pred_p) ** 2))
+        ss_tot   = float(np.sum((y_hat_p - y_hat_p.mean()) ** 2))
+        local_r2 = 1.0 - ss_res / ss_tot if ss_tot > 1e-12 else 1.0
+
+        return {
+            "intercept":      intercept,
+            "additive":       additive,
+            "pairwise":       pairwise,
+            "prediction":     prediction,
+            "partition_size": n_p,
+            "local_r2":       local_r2,
+            "feature_names":  list(feature_names),
+        }
+
     # ------------------------------------------------------------------
     # Properties
     # ------------------------------------------------------------------
