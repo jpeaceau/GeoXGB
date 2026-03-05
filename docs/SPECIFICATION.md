@@ -55,7 +55,7 @@
 
 GeoXGB is a geometry-aware gradient boosting framework.  It augments standard
 gradient-boosted trees with a spatial resampling layer called **HVRT**
-(Heteroscedasticity-Variance Resampling Transform) that partitions the
+(Hierarchical Variance Retention Transformer) that partitions the
 whitened feature space into geometrically coherent regions, selectively
 retains informative samples, and optionally generates synthetic training
 points to stabilize learning in small-data regimes.

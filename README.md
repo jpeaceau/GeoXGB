@@ -2,7 +2,7 @@
 
 GeoXGB replaces conventional subsampling and bootstrapping with geometry-aware
 sample reduction and expansion powered by [HVRT](https://pypi.org/project/hvrt/)
-(Hierarchical Variance-Retaining Transformer).
+(Hierarchical Variance Retention Transformer).
 
 ## Installation
 
