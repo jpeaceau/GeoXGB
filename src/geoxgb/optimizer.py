@@ -219,11 +219,24 @@ class GeoXGBOptimizer:
 
         # Select task-specific defaults and search space
         if task == "classification":
-            defaults     = self._DEFAULTS_CLASSIFICATION
-            search_space = self._SEARCH_SPACE_CLASSIFICATION
+            defaults     = dict(self._DEFAULTS_CLASSIFICATION)
+            search_space = dict(self._SEARCH_SPACE_CLASSIFICATION)
         else:
-            defaults     = self._DEFAULTS_REGRESSION
-            search_space = self._SEARCH_SPACE_REGRESSION
+            defaults     = dict(self._DEFAULTS_REGRESSION)
+            search_space = dict(self._SEARCH_SPACE_REGRESSION)
+
+        # Dynamically add sample_block_n when n is large enough for cycling to
+        # matter, and the user hasn't fixed it via fixed_params.
+        n_samples = len(X)
+        if n_samples > 5000 and 'sample_block_n' not in fixed_params:
+            blk_candidates = [None]
+            for frac in (0.05, 0.1, 0.2, 0.3):
+                bn = int(n_samples * frac)
+                if 500 <= bn < n_samples:
+                    blk_candidates.append(bn)
+            if len(blk_candidates) > 1:
+                search_space['sample_block_n'] = blk_candidates
+                defaults['sample_block_n']     = None
 
         from geoxgb import GeoXGBClassifier, GeoXGBRegressor
         model_cls = GeoXGBClassifier if task == "classification" else GeoXGBRegressor

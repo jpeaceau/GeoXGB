@@ -615,48 +615,74 @@ void GeoXGBBase::fit_boosting(
         const Eigen::MatrixXd& X_arg,
         const Eigen::VectorXd& y_arg)
 {
-    // ── Optional pre-subsampling for scalability ──────────────────────────────
-    // When max_resample_n > 0 and n exceeds it, randomly subsample to
-    // max_resample_n rows before fitting.  All downstream costs (HVRT fit,
-    // GBT tree training, predict-on-X gradient tracking) then scale with
-    // max_resample_n rather than full n.  Equivalent to XGBoost's subsample
-    // parameter, but applied once at fit start rather than per-round.
-    Eigen::MatrixXd X_sub_buf;
-    Eigen::VectorXd y_sub_buf;
-    const Eigen::MatrixXd* Xp = &X_arg;
-    const Eigen::VectorXd* yp = &y_arg;
-    if (cfg_.max_resample_n > 0 &&
-        static_cast<int>(X_arg.rows()) > cfg_.max_resample_n)
-    {
-        const int n_sub  = cfg_.max_resample_n;
-        const int n_full = static_cast<int>(X_arg.rows());
-        X_sub_buf.resize(n_sub, X_arg.cols());
-        y_sub_buf.resize(n_sub);
-        // Fisher-Yates partial shuffle using a simple LCG
-        std::vector<int> idx(n_full);
-        std::iota(idx.begin(), idx.end(), 0);
-        uint64_t lcg = static_cast<uint64_t>(cfg_.random_state) * 6364136223846793005ULL + 1442695040888963407ULL;
-        auto rng_bounded = [&](int range) -> int {
-            lcg = lcg * 6364136223846793005ULL + 1442695040888963407ULL;
-            return static_cast<int>((lcg >> 33) % static_cast<uint64_t>(range));
-        };
-        for (int i = 0; i < n_sub; ++i) {
-            int j = i + rng_bounded(n_full - i);
-            std::swap(idx[i], idx[j]);
-        }
-        for (int i = 0; i < n_sub; ++i) {
-            X_sub_buf.row(i) = X_arg.row(idx[i]);
-            y_sub_buf[i]     = y_arg[idx[i]];
-        }
-        Xp = &X_sub_buf;
-        yp = &y_sub_buf;
-    }
-    // Shadow the parameter names so all code below uses the (possibly subsampled) data.
-    const Eigen::MatrixXd& X = *Xp;
-    const Eigen::VectorXd& y = *yp;
+    // ── Block cycling setup ───────────────────────────────────────────────────
+    // When sample_block_n > 0 and n_arg > sample_block_n, the full dataset is
+    // divided into non-overlapping blocks via a deterministic LCG permutation.
+    // At each refit_interval the boosting loop advances to the next block; all
+    // per-round costs scale with sample_block_n rather than n_arg.  Different
+    // blocks cover different geometric regions, giving progressive data coverage.
+    // Future work: pre-fetch next block asynchronously via std::future (Phase 2).
+    const int  n_arg       = static_cast<int>(X_arg.rows());
+    const int  d           = static_cast<int>(X_arg.cols());
+    const bool block_cycle = (cfg_.sample_block_n > 0 && n_arg > cfg_.sample_block_n);
+    const int  blk_sz      = block_cycle ? cfg_.sample_block_n : n_arg;
 
-    const int n = static_cast<int>(X.rows());
-    const int d = static_cast<int>(X.cols());
+    // Mutable working matrices — updated at each block switch (or assigned once).
+    Eigen::MatrixXd X_cur;
+    Eigen::VectorXd y_cur;
+
+    // Block permutation state
+    std::vector<int> blk_perm;
+    int blk_ctr = 0, blk_epoch = 0, n_usable_blocks = 1;
+
+    // LCG-based Fisher-Yates in-place shuffle of blk_perm.
+    auto lcg_permute = [&](int epoch_seed) {
+        std::iota(blk_perm.begin(), blk_perm.end(), 0);
+        uint64_t lcg = static_cast<uint64_t>(cfg_.random_state + epoch_seed)
+                       * 6364136223846793005ULL + 1442695040888963407ULL;
+        for (int i = 0; i < n_arg - 1; ++i) {
+            lcg = lcg * 6364136223846793005ULL + 1442695040888963407ULL;
+            int j = i + static_cast<int>((lcg >> 33)
+                        % static_cast<uint64_t>(n_arg - i));
+            std::swap(blk_perm[i], blk_perm[j]);
+        }
+    };
+
+    // Slice the current block from X_arg / y_arg into X_cur / y_cur.
+    auto slice_block = [&]() {
+        const int start = blk_ctr * blk_sz;
+        X_cur.resize(blk_sz, d);
+        y_cur.resize(blk_sz);
+        for (int i = 0; i < blk_sz; ++i) {
+            X_cur.row(i) = X_arg.row(blk_perm[start + i]);
+            y_cur[i]     = y_arg[blk_perm[start + i]];
+        }
+    };
+
+    // Advance to next block, reshuffling permutation at epoch boundary.
+    auto advance_block = [&]() {
+        blk_ctr++;
+        if (blk_ctr >= n_usable_blocks) {
+            blk_ctr = 0;
+            blk_epoch++;
+            lcg_permute(blk_epoch);
+        }
+        slice_block();
+    };
+
+    if (block_cycle) {
+        const int n_total = n_arg / blk_sz;
+        n_usable_blocks = std::max(1, n_total - (cfg_.leave_last_block_out ? 1 : 0));
+        blk_perm.resize(n_arg);
+        lcg_permute(0);
+        slice_block();  // X_cur = block 0, y_cur = block 0 targets
+    } else {
+        X_cur = X_arg;  // one-time O(n) copy for the non-cycling path
+        y_cur = y_arg;
+    }
+
+    // n is the current block size; constant when !block_cycle.
+    int n = blk_sz;
 
     trees_.clear();
     trees_.reserve(cfg_.n_rounds);
@@ -664,14 +690,15 @@ void GeoXGBBase::fit_boosting(
     rho_trace_.clear();
     yw_eff_trace_.clear();
 
-    // ── Bin full X once for GBT weak learner trees ────────────────────────────
+    // ── Bin for GBT weak learner trees ───────────────────────────────────────
     // GBT trees work on the original feature space (no whitening).
-    // We bin X at the start and subset X_bin_full_[red_idx] for each Xr.
+    // When block cycling, fit bin edges on X_arg (full data) for consistent
+    // thresholds across blocks; then transform each block on demand.
     cont_cols_full_.resize(d);
     std::iota(cont_cols_full_.begin(), cont_cols_full_.end(), 0);
 
-    full_binner_.fit(X, cfg_.n_bins);
-    X_bin_full_    = full_binner_.transform(X);
+    full_binner_.fit(block_cycle ? X_arg : X_cur, cfg_.n_bins);
+    X_bin_full_ = full_binner_.transform(X_cur);
     // Cache bin edges once; injected into every GBT weak learner to skip
     // the per-round O(n·d·log n) re-sort inside PartitionTree::build().
     // Using the same edges that produced X_bin_full_ also ensures consistency:
@@ -686,11 +713,11 @@ void GeoXGBBase::fit_boosting(
     // Threshold <= 0 disables this path (HVRT always active — default).
     const bool use_hvrt = (cfg_.d_geom_threshold <= 0) || (d > cfg_.d_geom_threshold);
     if (!use_hvrt) {
-        init_pred_ = init_prediction(y);
+        init_pred_ = init_prediction(y_cur);
         Eigen::VectorXd preds_pg = Eigen::VectorXd::Constant(n, init_pred_);
 
         for (int i = 0; i < cfg_.n_rounds; ++i) {
-            Eigen::VectorXd grads = gradients(y, preds_pg);
+            Eigen::VectorXd grads = gradients(y_cur, preds_pg);
             if (!grads.allFinite()) grads.setZero();
 
             hvrt::HVRTConfig tcfg;
@@ -706,9 +733,9 @@ void GeoXGBBase::fit_boosting(
             wl.cont_cols = cont_cols_full_;
             wl.lr        = cfg_.learning_rate;
             wl.tree.inject_bin_edges(gbt_bin_edges_, cont_cols_full_, cfg_.n_bins);
-            wl.tree.build(X, X_bin_full_, cont_cols_full_, {}, grads, tcfg);
+            wl.tree.build(X_cur, X_bin_full_, cont_cols_full_, {}, grads, tcfg);
 
-            Eigen::VectorXd lp = wl.tree.predict(X);
+            Eigen::VectorXd lp = wl.tree.predict(X_cur);
             preds_pg.noalias() += cfg_.learning_rate * lp;
             trees_.push_back(std::move(wl));
         }
@@ -718,7 +745,7 @@ void GeoXGBBase::fit_boosting(
 
     // ── Initial resample ──────────────────────────────────────────────────────
     std::shared_ptr<hvrt::HVRT> last_hvrt;
-    ResampleResult res = do_resample(X, y, 0, last_hvrt);
+    ResampleResult res = do_resample(X_cur, y_cur, 0, last_hvrt);
 
     Eigen::MatrixXd Xr      = res.X;
     Eigen::VectorXd yr      = res.y;
@@ -772,16 +799,32 @@ void GeoXGBBase::fit_boosting(
 
         // ── Refit ─────────────────────────────────────────────────────────────
         if (cfg_.refit_interval > 0 && i > 0 && (i % cfg_.refit_interval == 0)) {
-            Eigen::VectorXd grads_orig = gradients(y, preds_on_X);
+            // Block cycling: advance to next non-overlapping block, resync state.
+            bool block_just_advanced = false;
+            if (block_cycle) {
+                advance_block();
+                n = blk_sz;
+                X_bin_full_ = full_binner_.transform(X_cur);
+                xr_changed  = true;
+                last_hvrt   = nullptr;  // force fresh HVRT fit on new block
+                preds_on_X  = predict_from_trees(X_cur, -1);
+                expansion_risk = cfg_.auto_expand && (n < cfg_.min_train_samples);
+                block_just_advanced = true;
+                // Reset noise estimate: on a fresh block red_idx is stale so
+                // skip_refit must NOT fire (would use wrong indices for preds sync).
+                last_noise_mod = 1.0;
+            }
+            Eigen::VectorXd grads_orig = gradients(y_cur, preds_on_X);
 
-            bool skip_refit = cfg_.noise_guard && cfg_.auto_noise
+            bool skip_refit = !block_just_advanced
+                              && cfg_.noise_guard && cfg_.auto_noise
                               && expansion_risk
                               && (last_noise_mod < cfg_.refit_noise_floor);
 
             if (!skip_refit) {
                 // Refit: pass last_hvrt so do_resample() can reuse cached whitener/binner/
                 // geometry-target via HVRT::refit(), saving O(n·d²) + O(n²·d) per refit.
-                ResampleResult new_res = do_resample(X, grads_orig, i, last_hvrt);
+                ResampleResult new_res = do_resample(X_cur, grads_orig, i, last_hvrt);
                 last_noise_mod  = new_res.noise_mod;
                 last_noise_mod_ = last_noise_mod;
 
@@ -804,6 +847,11 @@ void GeoXGBBase::fit_boosting(
                     sync_preds(new_res.n_expanded);
                     // Reconstruct yr: regression adds, classifier subclass overrides
                     yr = targets_from_gradients(new_res.y, preds);
+                } else if (block_just_advanced) {
+                    // Discard on a fresh block: red_idx is stale — recompute preds
+                    // on the existing Xr (from old block) via full tree traversal.
+                    // yr stays as-is (old block targets) since Xr is unchanged.
+                    preds = predict_from_trees(Xr, -1);
                 } else {
                     // Discard: Xr unchanged; sync preds from preds_on_X
                     sync_preds(last_n_expanded);
@@ -868,7 +916,7 @@ void GeoXGBBase::fit_boosting(
 
         // Accumulate predictions
         Eigen::VectorXd lp_Xr = wl.tree.predict(Xr);
-        Eigen::VectorXd lp_X  = wl.tree.predict(X);
+        Eigen::VectorXd lp_X  = wl.tree.predict(X_cur);
         preds       += cfg_.learning_rate * lp_Xr;
         preds_on_X  += cfg_.learning_rate * lp_X;
 

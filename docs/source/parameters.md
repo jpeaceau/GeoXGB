@@ -412,17 +412,46 @@ where L1 gradients are more prone to tail effects.
 
 ---
 
-## Geometry caching
+## Large-n block cycling
 
-### `cache_geometry` — bool, default `False`
+### `sample_block_n` — int, `'auto'`, or None, default `'auto'`
 
-When `True`, the initial HVRT geometry (partition tree, z-scores) is cached and
-reused for all subsequent refits instead of being recomputed. Saves memory and
-refit time on large datasets.
+Epoch-based block cycling for large datasets. When active, the training set
+is split into non-overlapping windows of this size; each boosting epoch trains
+on one block, cycling through all blocks before reshuffling with a new random
+permutation. Block boundaries provide geometric diversity across epochs without
+paying full-n HVRT cost.
 
-- **Set to `True`** when `n` is large and refit cost is noticeable.
-- **Trade-off:** cached geometry cannot adapt to the evolving residual
-  distribution. Best combined with a high `refit_interval` or `refit_interval=None`.
+- **`'auto'`** (default): resolves to `500 + (n − 5 000) // 50` when n > 5 000,
+  disabled (equivalent to `None`) for n ≤ 5 000. Examples: n=10k → 600,
+  n=50k → 1 400, n=100k → 2 400.
+- **`int`:** use a fixed block size (independent of n).
+- **`None`:** disabled — all n samples used each round (original behaviour).
+
+Block cycling is 1.8–2× faster than training on the full dataset and gives
+equal or better accuracy due to cross-block regularisation.
+
+**Interaction with `leave_last_block_out`:** when True, the final block is
+withheld and exposed as `model._held_out_X_` / `model._held_out_y_` after fit
+(forces the Python path regardless of other settings).
+
+- **Leave at `'auto'`** in almost all cases.
+- **Set `None`** when n ≤ 5 000 and the auto default is already inactive, or
+  when debugging to rule out block effects.
+- **Set an int** when you need a reproducible fixed block size across datasets.
+
+---
+
+### `leave_last_block_out` — bool, default `False`
+
+When `True` (requires `sample_block_n` to be active), holds out the final
+permutation block as a lightweight validation set. After `fit()`:
+
+- `model._held_out_X_` — the held-out feature matrix
+- `model._held_out_y_` — the held-out targets
+
+Forces the Python path (C++ path does not support held-out blocks). Useful for
+quick in-fit validation without a separate train/val split.
 
 ---
 

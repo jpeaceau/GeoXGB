@@ -36,7 +36,7 @@ class _GeoXGBBase:
         "feature_weights", "assignment_strategy", "tree_splitter",
         "refit_noise_floor", "noise_guard", "hvrt_params", "hvrt_tree_splitter",
         "hvrt_auto_reduce_threshold", "partitioner", "adaptive_reduce_ratio",
-        "loss", "max_resample_n",
+        "loss", "sample_block_n", "leave_last_block_out",
     )
 
     # Subclasses set this to True to enable class-conditional noise estimation
@@ -78,7 +78,8 @@ class _GeoXGBBase:
         hvrt_auto_reduce_threshold=None,
         partitioner='hvrt',
         adaptive_reduce_ratio=False,
-        max_resample_n=None,
+        sample_block_n='auto',
+        leave_last_block_out=False,
     ):
         self.n_rounds = n_rounds
         self.learning_rate = learning_rate
@@ -114,7 +115,8 @@ class _GeoXGBBase:
         self.hvrt_auto_reduce_threshold = hvrt_auto_reduce_threshold
         self.partitioner = partitioner
         self.adaptive_reduce_ratio = adaptive_reduce_ratio
-        self.max_resample_n = max_resample_n
+        self.sample_block_n = sample_block_n
+        self.leave_last_block_out = leave_last_block_out
 
         # Fitted state
         self._trees = []
@@ -215,15 +217,42 @@ class _GeoXGBBase:
         X = np.asarray(X, dtype=np.float64)
         y = np.asarray(y, dtype=np.float64).ravel()
 
-        # Pre-subsample for scalability: cap working set before HVRT and the
-        # boosting loop so that all downstream costs scale with max_resample_n
-        # rather than the full n.  Equivalent to XGBoost's subsample parameter
-        # but applied once at fit time rather than per-round.
-        if self.max_resample_n is not None and len(X) > self.max_resample_n:
-            rng = np.random.RandomState(self.random_state)
-            sub_idx = rng.choice(len(X), size=self.max_resample_n, replace=False)
-            X = X[sub_idx]
-            y = y[sub_idx]
+        # Block cycling for scalability.
+        # When sample_block_n is set (or 'auto') and n exceeds the block size,
+        # the full dataset is divided into non-overlapping blocks.  At each
+        # refit_interval the boosting loop advances to the next block, cycling
+        # through epochs.  This gives full data coverage over time while keeping
+        # all per-round costs proportional to sample_block_n rather than n.
+        # 'auto': block_n = 500 + (n - 5000) // 50
+        #   n=5k->500, n=10k->600, n=50k->1400, n=100k->2400
+        #   Grows slowly so more blocks fit per epoch at large n. Disabled for n <= 5000.
+        _eff_block_n = self.sample_block_n
+        if _eff_block_n == 'auto':
+            n_ = len(X)
+            _eff_block_n = None if n_ <= 5000 else 500 + (n_ - 5000) // 50
+        _block_cycle = _eff_block_n is not None and len(X) > _eff_block_n
+        if _block_cycle:
+            _X_full = X
+            _y_full = y
+            _n_full = len(X)
+            _n_total_blocks = _n_full // _eff_block_n
+            # Usable blocks: optionally reserve last block as held-out set.
+            _n_usable = max(1, _n_total_blocks - (1 if self.leave_last_block_out else 0))
+            _blk_epoch = 0
+            _blk_ctr = 0
+            _blk_perm = np.random.RandomState(self.random_state).permutation(_n_full)
+
+            def _get_block(ctr, perm):
+                s = ctr * _eff_block_n
+                return perm[s : s + _eff_block_n]
+
+            _blk_idx = _get_block(0, _blk_perm)
+            X = _X_full[_blk_idx]
+            y = _y_full[_blk_idx]
+            if self.leave_last_block_out and _n_total_blocks > 1:
+                _lo_idx = _blk_perm[(_n_total_blocks - 1) * _eff_block_n:]
+                self._held_out_X_ = _X_full[_lo_idx]
+                self._held_out_y_ = _y_full[_lo_idx]
 
         # Auto-reduce: when n exceeds the threshold, use HVRT (with its own
         # auto_tune) to select a representative subset before boosting begins.
@@ -255,7 +284,7 @@ class _GeoXGBBase:
             y = y[_ar_idx]
 
         self._n_features = X.shape[1]
-        self._train_n_original = len(X)
+        self._train_n_original = _n_full if _block_cycle else len(X)
 
         # Store integer class labels for class-conditional noise estimation
         # (classifier sets _is_classifier=True; regressor leaves it False)
@@ -304,6 +333,27 @@ class _GeoXGBBase:
                 and i > 0
                 and i % self.refit_interval == 0
             ):
+                # Block cycling: advance to next non-overlapping block.
+                # Resync preds_on_X for the new block before computing gradients.
+                _block_just_advanced = False
+                if _block_cycle:
+                    _blk_ctr += 1
+                    if _blk_ctr >= _n_usable:
+                        _blk_ctr = 0
+                        _blk_epoch += 1
+                        _blk_perm = np.random.RandomState(
+                            self.random_state + _blk_epoch
+                        ).permutation(_n_full)
+                    _blk_idx = _get_block(_blk_ctr, _blk_perm)
+                    X = _X_full[_blk_idx]
+                    y = _y_full[_blk_idx]
+                    preds_on_X = self._raw_predict(X)
+                    _expansion_risk = self.auto_expand and (len(X) < self.min_train_samples)
+                    _block_just_advanced = True
+                    # Reset so noise guard cannot fire with stale red_idx on first
+                    # refit of a new block.
+                    _last_refit_noise = 1.0
+
                 # Use incrementally-tracked preds_on_X — avoids O(i × n) _raw_predict(X)
                 grads_orig = self._compute_gradients(y, preds_on_X)
 
@@ -330,7 +380,8 @@ class _GeoXGBBase:
                 # auto_expand never synthesises samples, so noisy geometry is far
                 # less harmful and stale geometry from repeated skips is worse.
                 _skip_refit = (
-                    self.noise_guard
+                    not _block_just_advanced
+                    and self.noise_guard
                     and self.auto_noise
                     and _expansion_risk
                     and (_last_refit_noise < self.refit_noise_floor)
@@ -370,7 +421,7 @@ class _GeoXGBBase:
                         and _expansion_risk
                         and res.noise_modulation < self.refit_noise_floor
                     ):
-                        if _last_valid_res.n_expanded == 0:
+                        if not _block_just_advanced and _last_valid_res.n_expanded == 0:
                             preds = preds_on_X[_last_valid_res.red_idx]
                         else:
                             preds = self._raw_predict(Xr)
