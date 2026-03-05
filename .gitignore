@@ -24,9 +24,17 @@ data/*.csv
 data/*.pkl
 insights/
 
-# IDE
+# IDE / editor
 .idea/
 .vscode/
+.claude/
+
+# Generated outputs
+main.pdf
+*.bak
+benchmarks/*.png
+benchmarks/benchmarks/
+benchmarks/experimental/
 
 # Pip
 *.whl
