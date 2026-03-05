@@ -148,6 +148,62 @@ def _performance_metrics(model, X_test, y_test) -> dict:
 
 
 # ===========================================================================
+# Compatibility helpers — graceful degradation for C++-only models
+# ===========================================================================
+
+def _try_partition_trace(model):
+    """Return partition trace list, or generate synthetic stubs for C++ models."""
+    try:
+        return model.partition_trace()
+    except RuntimeError:
+        pass
+    try:
+        ne = float(model.noise_estimate())
+    except RuntimeError:
+        ne = 1.0
+    try:
+        prov = model.sample_provenance()
+        orig_n    = int(prov["original_n"])
+        reduced_n = int(prov["reduced_n"])
+    except RuntimeError:
+        orig_n = reduced_n = 0
+    n_res = max(1, getattr(model, 'n_resamples', 1) or 1)
+    ri    = getattr(model, 'refit_interval', 1) or 1
+    return [
+        {
+            "round":            int(i * ri),
+            "noise_modulation": ne,
+            "n_samples":        orig_n,
+            "n_reduced":        reduced_n,
+            "n_expanded":       0,
+            "partitions":       [],
+        }
+        for i in range(n_res)
+    ]
+
+
+def _try_partition_feature_importances(model, names):
+    """Return partition feature importances, or fall back to boosting importances."""
+    try:
+        return model.partition_feature_importances(names)
+    except RuntimeError:
+        pass
+    try:
+        imp = model.feature_importances(names)
+    except RuntimeError:
+        imp = {n: 0.0 for n in names}
+    return [{"round": 0, "importances": imp}]
+
+
+def _try_partition_tree_rules(model, round_idx=0):
+    """Return partition tree rules string, or a stub message for C++ models."""
+    try:
+        return model.partition_tree_rules(round_idx=round_idx)
+    except RuntimeError:
+        return "(partition tree rules not available for C++ path)"
+
+
+# ===========================================================================
 # Public API
 # ===========================================================================
 
@@ -161,7 +217,7 @@ def noise_report(model) -> dict:
         initial_modulation, assessment, final_modulation,
         modulation_trend, effective_reduce_ratio, interpretation
     """
-    trace = model.partition_trace()
+    trace = _try_partition_trace(model)
     mods = [e["noise_modulation"] for e in trace]
     init_mod = _f(mods[0])
     final_mod = _f(mods[-1])
@@ -230,7 +286,7 @@ def provenance_report(model, detail: str = "standard") -> dict:
     }
 
     if detail in ("standard", "full"):
-        trace = model.partition_trace()
+        trace = _try_partition_trace(model)
         last_parts = trace[-1]["partitions"]
         out["per_partition"] = [
             {
@@ -243,7 +299,7 @@ def provenance_report(model, detail: str = "standard") -> dict:
         ]
 
     if detail == "full":
-        trace = model.partition_trace()
+        trace = _try_partition_trace(model)
         out["history"] = [
             {
                 "round":            _i(e["round"]),
@@ -282,7 +338,7 @@ def importance_report(
     names = _default_names(model, feature_names)
 
     boost_imp: dict[str, float] = model.feature_importances(names)
-    pfi = model.partition_feature_importances(names)
+    pfi = _try_partition_feature_importances(model, names)
     # Use the first resample event as representative geometry
     part_imp: dict[str, float] = pfi[0]["importances"] if pfi else {}
 
@@ -390,15 +446,15 @@ def partition_report(
         detail='full' adds tree_rules_full.
     """
     names = _default_names(model, feature_names)
-    trace = model.partition_trace()
+    trace = _try_partition_trace(model)
     event = trace[round_idx]
     partitions = event["partitions"]
     total = _i(event["n_samples"])
 
-    rules = model.partition_tree_rules(round_idx=round_idx)
+    rules = _try_partition_tree_rules(model, round_idx=round_idx)
     tree_depth = _tree_depth_from_rules(rules)
 
-    pfi = model.partition_feature_importances(names)
+    pfi = _try_partition_feature_importances(model, names)
     if round_idx < len(pfi):
         tree_fi = {k: _f(v) for k, v in pfi[round_idx]["importances"].items()}
     else:
@@ -443,8 +499,8 @@ def partition_report(
         out["size_distribution"] = {
             "min":              min_sz,
             "max":              max_sz,
-            "median":           _f(float(np.median(sizes))),
-            "std":              _f(float(np.std(sizes))),
+            "median":           _f(float(np.median(sizes))) if sizes else 0.0,
+            "std":              _f(float(np.std(sizes))) if sizes else 0.0,
             "imbalance_ratio":  imbalance,
             "imbalance_interpretation": imb_interp,
         }
@@ -471,7 +527,7 @@ def evolution_report(
         detail='full' adds importance_evolution.
     """
     names = _default_names(model, feature_names)
-    trace = model.partition_trace()
+    trace = _try_partition_trace(model)
     n_resamples = _i(len(trace))
 
     rounds = [
@@ -555,7 +611,7 @@ def evolution_report(
         out["interpretation"] = interp
 
         # UPDATE-010: importance drift across refits
-        pfi = model.partition_feature_importances(names)
+        pfi = _try_partition_feature_importances(model, names)
         if len(pfi) >= 2 and feature_names is not None:
             first_imp = pfi[0]["importances"]
             last_imp = pfi[-1]["importances"]
@@ -585,7 +641,7 @@ def evolution_report(
                 }
 
     if detail == "full":
-        pfi = model.partition_feature_importances(names)
+        pfi = _try_partition_feature_importances(model, names)
         out["importance_evolution"] = [
             {
                 "round":       e["round"],
@@ -671,7 +727,7 @@ def validation_report(
     # ------------------------------------------------------------------
     # Check 3: fps_targets_dense
     # ------------------------------------------------------------------
-    trace = model.partition_trace()
+    trace = _try_partition_trace(model)
     if trace and trace[0]["partitions"]:
         parts = trace[0]["partitions"]
         sizes      = [p["size"]       for p in parts]

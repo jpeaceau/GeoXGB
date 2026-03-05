@@ -64,6 +64,7 @@ endif()
 add_library(geoxgb_core STATIC
     cpp/src/noise.cpp
     cpp/src/geoxgb_base.cpp
+    cpp/src/geoxgb_multiclass.cpp
 )
 
 target_include_directories(geoxgb_core PUBLIC cpp/include)

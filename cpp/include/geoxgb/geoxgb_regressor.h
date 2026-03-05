@@ -1,5 +1,7 @@
 #pragma once
 #include "geoxgb/geoxgb_base.h"
+#include <algorithm>
+#include <vector>
 
 namespace geoxgb {
 
@@ -19,10 +21,19 @@ public:
 
 protected:
     double init_prediction(const Eigen::VectorXd& y) const override {
+        if (cfg_.loss == "absolute_error") {
+            std::vector<double> v(y.data(), y.data() + y.size());
+            const int mid = static_cast<int>(v.size()) / 2;
+            std::nth_element(v.begin(), v.begin() + mid, v.end());
+            return v[mid];  // median
+        }
         return y.mean();
     }
+
     Eigen::VectorXd gradients(const Eigen::VectorXd& y,
                                const Eigen::VectorXd& preds) const override {
+        if (cfg_.loss == "absolute_error")
+            return (y - preds).array().sign().matrix();
         return y - preds;  // negative gradient of squared-error
     }
 };

@@ -1,5 +1,6 @@
 from geoxgb.regressor import GeoXGBRegressor, GeoXGBMAERegressor
 from geoxgb.classifier import GeoXGBClassifier
+from geoxgb.contributions import ContributionFrame
 from geoxgb.gardener import Gardener
 from geoxgb import report
 from geoxgb._hart import HART, FastHART, PyramidHART
@@ -19,6 +20,7 @@ try:
     from geoxgb.optimizer import GeoXGBOptimizer
     __all__ = ["GeoXGBRegressor", "GeoXGBMAERegressor", "GeoXGBClassifier",
                "GeoXGBOptimizer", "Gardener", "load_model", "report",
+               "ContributionFrame",
                "HART", "FastHART", "PyramidHART",
                "GeoXGBExplainer", "Explanation", "PathNode", "Neighbour",
                "PartitionGeometry", "format_explanation", "print_explanation",
@@ -26,6 +28,7 @@ try:
 except ImportError:
     __all__ = ["GeoXGBRegressor", "GeoXGBMAERegressor", "GeoXGBClassifier",
                "Gardener", "load_model", "report",
+               "ContributionFrame",
                "HART", "FastHART", "PyramidHART",
                "GeoXGBExplainer", "Explanation", "PathNode", "Neighbour",
                "PartitionGeometry", "format_explanation", "print_explanation",
@@ -54,4 +57,4 @@ def load_model(path):
     return joblib.load(path)
 
 
-__version__ = "0.3.2"
+__version__ = "0.3.3"

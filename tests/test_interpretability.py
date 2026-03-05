@@ -4,7 +4,7 @@ Interpretability API tests.
 import numpy as np
 import pytest
 
-from geoxgb import GeoXGBRegressor
+from geoxgb import GeoXGBRegressor, GeoXGBClassifier
 
 RNG = np.random.default_rng(3)
 N, P = 300, 6
@@ -22,8 +22,7 @@ def _fitted_model(expand_ratio=0.0):
         expand_ratio=expand_ratio, random_state=0,
         auto_expand=False, hvrt_min_samples_leaf=20,
     )
-    # feature_types forces Python path (interpretability API requires Python backend)
-    reg.fit(X, y, feature_types=["continuous"] * P)
+    reg.fit(X, y)
     return reg
 
 
@@ -41,63 +40,33 @@ def test_feature_importances_format():
 
 
 # ---------------------------------------------------------------------------
-# 2. partition_feature_importances
+# 2. partition_feature_importances — now raises RuntimeError (C++ path only)
 # ---------------------------------------------------------------------------
 
-def test_partition_feature_importances_format():
+def test_partition_feature_importances_raises():
     reg = _fitted_model()
-    pfi = reg.partition_feature_importances(FEATURE_NAMES)
-    assert isinstance(pfi, list)
-    assert len(pfi) >= 1
-    for entry in pfi:
-        assert "round" in entry
-        assert "importances" in entry
-        assert isinstance(entry["importances"], dict)
-
-def test_partition_feature_importances_signal_over_noise():
-    reg = _fitted_model()
-    pfi = reg.partition_feature_importances(FEATURE_NAMES)
-    # First resample: signal features should collectively dominate
-    imps = pfi[0]["importances"]
-    signal_imp = sum(imps.get(f"x{i}", 0) for i in SIGNAL_FEATURES)
-    noise_imp  = sum(imps.get(f"x{i}", 0) for i in NOISE_FEATURES)
-    assert signal_imp > noise_imp, (
-        f"Signal importance={signal_imp:.3f} should exceed noise={noise_imp:.3f}"
-    )
+    with pytest.raises(RuntimeError):
+        reg.partition_feature_importances(FEATURE_NAMES)
 
 
 # ---------------------------------------------------------------------------
-# 3. partition_trace
+# 3. partition_trace — now raises RuntimeError (C++ path only)
 # ---------------------------------------------------------------------------
 
-def test_partition_trace_format():
+def test_partition_trace_raises():
     reg = _fitted_model()
-    trace = reg.partition_trace()
-    assert isinstance(trace, list)
-    assert len(trace) >= 1
-    required_keys = {"round", "noise_modulation", "n_samples",
-                     "n_reduced", "n_expanded", "partitions"}
-    for entry in trace:
-        assert required_keys.issubset(entry.keys()), (
-            f"Missing keys: {required_keys - entry.keys()}"
-        )
-        assert isinstance(entry["partitions"], list)
+    with pytest.raises(RuntimeError):
+        reg.partition_trace()
 
 
 # ---------------------------------------------------------------------------
-# 4. partition_tree_rules
+# 4. partition_tree_rules — now raises RuntimeError (C++ path only)
 # ---------------------------------------------------------------------------
 
-def test_partition_tree_rules():
+def test_partition_tree_rules_raises():
     reg = _fitted_model()
-    rules = reg.partition_tree_rules(round_idx=0)
-    assert isinstance(rules, str)
-    assert len(rules) > 0
-
-def test_partition_tree_rules_bad_index():
-    reg = _fitted_model()
-    with pytest.raises(IndexError):
-        reg.partition_tree_rules(round_idx=9999)
+    with pytest.raises(RuntimeError):
+        reg.partition_tree_rules(round_idx=0)
 
 
 # ---------------------------------------------------------------------------
@@ -119,9 +88,10 @@ def test_sample_provenance_no_expansion():
     )
 
 def test_sample_provenance_with_expansion():
+    # C++ path does not track expansion; expanded_n is always 0
     reg = _fitted_model(expand_ratio=0.2)
     prov = reg.sample_provenance()
-    assert prov["expanded_n"] > 0
+    assert prov["expanded_n"] == 0
 
 
 # ---------------------------------------------------------------------------
@@ -132,7 +102,7 @@ def test_noise_estimate_clean():
     X = RNG.standard_normal((300, 5))
     y = 3 * X[:, 0] - 2 * X[:, 1] + RNG.standard_normal(300) * 0.05
     reg = GeoXGBRegressor(n_rounds=10, refit_interval=5, auto_noise=True, random_state=0)
-    reg.fit(X, y, feature_types=["continuous"] * 5)
+    reg.fit(X, y)
     ne = reg.noise_estimate()
     assert 0.0 <= ne <= 1.0
     assert ne > 0.5, f"Clean data noise_estimate={ne:.3f}, expected > 0.5"
@@ -141,7 +111,7 @@ def test_noise_estimate_noisy():
     X = RNG.standard_normal((300, 5))
     y = 3 * X[:, 0] - 2 * X[:, 1] + RNG.standard_normal(300) * 20.0
     reg = GeoXGBRegressor(n_rounds=10, refit_interval=5, auto_noise=True, random_state=0)
-    reg.fit(X, y, feature_types=["continuous"] * 5)
+    reg.fit(X, y)
     ne = reg.noise_estimate()
     assert 0.0 <= ne <= 1.0
     assert ne < 0.5, f"Noisy data noise_estimate={ne:.3f}, expected < 0.5"
@@ -198,20 +168,6 @@ def test_cooperation_matrix_bounded():
     assert mats.max() <=  1.0 + 1e-9
 
 
-def test_cooperation_matrix_requires_python_path():
-    # C++ path: no feature_types → no hvrt_model with X_z_
-    from geoxgb._cpp_backend import _CPP_AVAILABLE
-    if not _CPP_AVAILABLE:
-        pytest.skip("C++ backend not available")
-    X = RNG.standard_normal((N, P))
-    y = RNG.standard_normal(N)
-    reg = GeoXGBRegressor(n_rounds=10, random_state=0)
-    reg.fit(X, y)   # no feature_types → C++ path
-    X_test = RNG.standard_normal((5, P))
-    with pytest.raises(RuntimeError):
-        reg.cooperation_matrix(X_test)
-
-
 # ---------------------------------------------------------------------------
 # 8. cooperation_score
 # ---------------------------------------------------------------------------
@@ -230,7 +186,7 @@ def test_cooperation_score_pyramid_hart_nonpositive():
     reg = GeoXGBRegressor(
         n_rounds=20, partitioner='pyramid_hart', random_state=0
     )
-    reg.fit(X, y, feature_types=["continuous"] * P)
+    reg.fit(X, y)
     X_test = RNG.standard_normal((50, P))
     scores = reg.cooperation_score(X_test)
     assert scores.max() <= 1e-9, (
@@ -245,7 +201,7 @@ def test_cooperation_score_hvrt_signed():
     reg = GeoXGBRegressor(
         n_rounds=20, partitioner='hvrt', random_state=0
     )
-    reg.fit(X, y, feature_types=["continuous"] * P)
+    reg.fit(X, y)
     X_test = RNG.standard_normal((50, P))
     scores = reg.cooperation_score(X_test)
     # HVRT scores can be positive or negative — just check shape
@@ -296,7 +252,7 @@ def _local_model_fixture():
         n_rounds=500, learning_rate=0.02, max_depth=3,
         y_weight=0.25, refit_interval=50, random_state=0,
     )
-    reg.fit(_X_SYNTH, _Y_SYNTH, feature_types=["continuous"] * 3)
+    reg.fit(_X_SYNTH, _Y_SYNTH)
     return reg
 
 
@@ -345,11 +301,97 @@ def test_local_model_prediction_close_to_ensemble():
     )
 
 
-def test_local_model_requires_python_path():
-    from geoxgb._cpp_backend import _CPP_AVAILABLE
-    if not _CPP_AVAILABLE:
-        pytest.skip("C++ backend not available")
+def test_local_model_works_without_feature_types():
+    # C++ path always has geometry — local_model should work
     reg = GeoXGBRegressor(n_rounds=10, random_state=0)
-    reg.fit(_X_SYNTH, _Y_SYNTH)   # no feature_types → C++ path
-    with pytest.raises(RuntimeError):
-        reg.local_model(np.array([1.0, 1.0, 1.0]))
+    reg.fit(_X_SYNTH, _Y_SYNTH)
+    lm = reg.local_model(np.array([1.0, 1.0, 1.0]))
+    assert "intercept" in lm
+    assert "additive" in lm
+
+
+# ---------------------------------------------------------------------------
+# 11. Multiclass classifier interpretability
+# ---------------------------------------------------------------------------
+
+def _fitted_multiclass():
+    rng = np.random.default_rng(42)
+    X = rng.standard_normal((200, 4))
+    y = np.array([0, 1, 2] * 66 + [0, 1])
+    X[y == 0, 0] += 2
+    X[y == 1, 1] += 2
+    X[y == 2, 2] += 2
+    clf = GeoXGBClassifier(
+        n_rounds=50, learning_rate=0.1, max_depth=3,
+        refit_interval=25, random_state=0,
+    )
+    clf.fit(X, y)
+    return clf, X
+
+
+def test_multiclass_cooperation_matrix():
+    clf, X = _fitted_multiclass()
+    result = clf.cooperation_matrix(X[:5])
+    assert result["matrices"].shape == (5, 4, 4)
+    assert result["global_matrix"].shape == (4, 4)
+
+
+def test_multiclass_cooperation_score():
+    clf, X = _fitted_multiclass()
+    scores = clf.cooperation_score(X[:10])
+    assert scores.shape == (10,)
+
+
+def test_multiclass_cooperation_tensor():
+    clf, X = _fitted_multiclass()
+    result = clf.cooperation_tensor(X[:5])
+    assert result["tensor"].shape == (5, 4, 4, 4)
+
+
+def test_multiclass_feature_importances():
+    clf, _ = _fitted_multiclass()
+    fi = clf.feature_importances()
+    assert isinstance(fi, dict)
+    assert abs(sum(fi.values()) - 1.0) < 0.01
+
+
+def test_multiclass_sample_provenance():
+    clf, _ = _fitted_multiclass()
+    prov = clf.sample_provenance()
+    assert prov["original_n"] == 200
+
+
+def test_multiclass_noise_estimate():
+    clf, _ = _fitted_multiclass()
+    ne = clf.noise_estimate()
+    assert 0.0 <= ne <= 1.0
+
+
+def test_multiclass_local_model_per_class():
+    clf, X = _fitted_multiclass()
+    for k in range(3):
+        lm = clf.local_model(X[0], target_class=k)
+        assert "intercept" in lm
+        assert lm["additive"].shape == (4,)
+        assert 0.0 <= lm["local_r2"] <= 1.0 + 1e-9
+
+
+def test_multiclass_local_model_requires_target_class():
+    clf, X = _fitted_multiclass()
+    with pytest.raises(ValueError, match="target_class"):
+        clf.local_model(X[0])
+
+
+def test_multiclass_contributions_per_class():
+    clf, X = _fitted_multiclass()
+    for k in range(3):
+        cf = clf.contributions(X[:10], target_class=k)
+        assert len(cf.main) == 4
+        assert cf.intercepts.shape == (10,)
+        assert cf.local_r2.shape == (10,)
+
+
+def test_multiclass_contributions_requires_target_class():
+    clf, X = _fitted_multiclass()
+    with pytest.raises(ValueError, match="target_class"):
+        clf.contributions(X[:10])

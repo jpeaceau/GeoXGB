@@ -1,6 +1,8 @@
 import numpy as np
 
-from geoxgb._base import _GeoXGBBase, _REFIT_NOISE_FLOOR
+from geoxgb._base import _GeoXGBBase, _resolve_auto_block
+
+_REFIT_NOISE_FLOOR = 0.05  # kept for external importers
 
 
 class GeoXGBRegressor(_GeoXGBBase):
@@ -74,8 +76,10 @@ class GeoXGBRegressor(_GeoXGBBase):
         permutation seeded by random_state).  At each refit_interval the boosting
         loop advances to the next block, cycling through epochs, giving progressive
         exposure to the full dataset.  All per-round costs scale with block size.
-        ``'auto'`` (default): ``500 + (n − 5000) // 50`` when n > 5 000, else disabled.
-        Gives ~500 at n=5k, ~600 at n=10k, ~1 400 at n=50k, ~2 400 at n=100k.
+        ``'auto'`` (default): ``max(2000, int(sqrt(n) * 15 * ri_scale))`` when
+        n > 5 000, else disabled.  ``ri_scale = clamp(refit_interval / 50,
+        0.5, 2.0)`` — fewer refits → proportionally larger blocks to maintain
+        data coverage; more refits → smaller blocks for speed.
         ``None``: disabled.  Integer: explicit block size.
         Included in HPO via ``GeoXGBOptimizer`` when n is large enough.
     leave_last_block_out : bool, default=False
@@ -171,54 +175,39 @@ class GeoXGBRegressor(_GeoXGBBase):
 
     def fit(self, X, y, feature_types=None):
         """
-        Fit the regressor.
-
-        Uses the compiled C++ backend by default for ``loss='squared_error'``
-        (faster, no additional dependencies required).  Falls back to the
-        pure-Python path when the C++ extension is not available, when
-        ``feature_types`` is specified, when ``convergence_tol`` is set,
-        or when ``loss='absolute_error'`` (L1 boosting is Python-only).
+        Fit the regressor using the C++ backend.
 
         Parameters
         ----------
         X : array-like of shape (n_samples, n_features)
         y : array-like of shape (n_samples,)
         feature_types : list of str, optional
-            'continuous' or 'categorical' per column.  Forces Python backend.
+            'continuous' or 'categorical' per column.  Categorical columns are
+            label-encoded to integers before passing to the C++ backend.
 
         Returns
         -------
         self
         """
-        from geoxgb._cpp_backend import _CPP_AVAILABLE
+        from geoxgb._cpp_backend import make_cpp_config, CppGeoXGBRegressor as _CppReg
         X = np.asarray(X, dtype=np.float64)
         y = np.asarray(y, dtype=np.float64)
+        self._n_features = X.shape[1]
+        self._feature_types = feature_types
+        X = self._encode_features(X, feature_types, fitting=True)
 
-        _use_cpp = (
-            _CPP_AVAILABLE
-            and self.loss == 'squared_error'
-            and feature_types is None
-            and self.convergence_tol is None
-            and not self.leave_last_block_out
-        )
-
-        if _use_cpp:
-            from geoxgb._cpp_backend import make_cpp_config, CppGeoXGBRegressor as _CppReg
-            params = {k: getattr(self, k) for k in self._PARAM_NAMES if hasattr(self, k)}
-            # Resolve 'auto' sample_block_n to an int before passing to C++ config.
-            if params.get('sample_block_n') == 'auto':
-                n = len(X)
-                params['sample_block_n'] = None if n <= 5000 else 500 + (n - 5000) // 50
-            self._cpp_model = _CppReg(make_cpp_config(**params))
-            self._cpp_model.fit(X, y)
-            self._is_fitted = True
-            cr = self._cpp_model.convergence_round()
-            self.convergence_round_ = None if cr < 0 else cr
-        else:
-            self._cpp_model = None
-            self._feature_types = feature_types
-            self._resample_history = []
-            self._fit_boosting(X, y)
+        params = {k: getattr(self, k) for k in self._PARAM_NAMES if hasattr(self, k)}
+        params['loss'] = self.loss
+        if params.get('sample_block_n') == 'auto':
+            params['sample_block_n'] = _resolve_auto_block(
+                len(X), self.refit_interval, self.n_rounds,
+            )
+        self._cpp_model = _CppReg(make_cpp_config(**params))
+        self._cpp_model.fit(X, y)
+        self._X_train = X
+        self._is_fitted = True
+        cr = self._cpp_model.convergence_round()
+        self.convergence_round_ = None if cr < 0 else cr
         return self
 
     def predict(self, X):
@@ -233,27 +222,9 @@ class GeoXGBRegressor(_GeoXGBBase):
         -------
         ndarray of shape (n_samples,)
         """
-        if getattr(self, '_cpp_model', None) is not None:
-            return self._cpp_model.predict(np.asarray(X, dtype=np.float64))
         self._check_fitted()
-        return self._raw_predict(X)
-
-    @property
-    def n_trees(self):
-        if getattr(self, '_cpp_model', None) is not None:
-            cr = self.convergence_round_
-            return cr if cr is not None else self.n_rounds
-        return len(self._trees)
-
-    def _compute_init_prediction(self, y):
-        if self.loss == 'absolute_error':
-            return float(np.median(y))
-        return float(np.mean(y))
-
-    def _compute_gradients(self, y, predictions):
-        if self.loss == 'absolute_error':
-            return np.sign(y - predictions)
-        return y - predictions
+        X = self._encode_features(np.asarray(X, dtype=np.float64), self._feature_types)
+        return self._cpp_model.predict(X)
 
 
 def GeoXGBMAERegressor(

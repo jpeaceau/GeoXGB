@@ -21,13 +21,15 @@ try:
         GeoXGBConfig,
         CppGeoXGBRegressor,
         CppGeoXGBClassifier,
+        CppGeoXGBMulticlassClassifier,
     )
     _CPP_AVAILABLE = True
 except ImportError:
     _CPP_AVAILABLE = False
-    GeoXGBConfig       = None
-    CppGeoXGBRegressor  = None
-    CppGeoXGBClassifier = None
+    GeoXGBConfig                    = None
+    CppGeoXGBRegressor              = None
+    CppGeoXGBClassifier             = None
+    CppGeoXGBMulticlassClassifier   = None
 
 
 # Map Python _GeoXGBBase constructor kwargs → GeoXGBConfig fields.
@@ -66,6 +68,7 @@ _PYTHON_TO_CPP = {
     "adaptive_reduce_ratio": "adaptive_reduce_ratio",
     "sample_block_n":        "sample_block_n",
     "leave_last_block_out":  "leave_last_block_out",
+    "loss":                  "loss",
 }
 
 
@@ -95,6 +98,15 @@ def make_cpp_config(**kwargs) -> "GeoXGBConfig":
             cfg.bandwidth = float(bw)
         except (TypeError, ValueError):
             cfg.bandwidth = -1.0
+
+    # convergence_tol: None = disabled (C++ uses 0.0 for disabled)
+    conv_tol = kwargs.get("convergence_tol", None)
+    if conv_tol is not None:
+        cfg.convergence_tol = float(conv_tol)
+
+    # pos_class_weight: passed separately by classifier (not in _PARAM_NAMES)
+    if "pos_class_weight" in kwargs and kwargs["pos_class_weight"] is not None:
+        cfg.pos_class_weight = float(kwargs["pos_class_weight"])
 
     for py_key, cpp_key in _PYTHON_TO_CPP.items():
         if py_key in kwargs:

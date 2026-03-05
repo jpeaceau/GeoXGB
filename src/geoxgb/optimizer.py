@@ -227,16 +227,19 @@ class GeoXGBOptimizer:
 
         # Dynamically add sample_block_n when n is large enough for cycling to
         # matter, and the user hasn't fixed it via fixed_params.
+        # Threshold 30k: block cycling hurts HPO at moderate n (FAnova: 86% of
+        # trial variance on 8k data).  Never include None — full-dataset mode
+        # is both slower and worse than any reasonable block size at large n.
         n_samples = len(X)
-        if n_samples > 5000 and 'sample_block_n' not in fixed_params:
-            blk_candidates = [None]
+        if n_samples > 30_000 and 'sample_block_n' not in fixed_params:
+            blk_candidates = []
             for frac in (0.05, 0.1, 0.2, 0.3):
                 bn = int(n_samples * frac)
-                if 500 <= bn < n_samples:
+                if 2000 <= bn < n_samples:
                     blk_candidates.append(bn)
-            if len(blk_candidates) > 1:
+            if blk_candidates:
                 search_space['sample_block_n'] = blk_candidates
-                defaults['sample_block_n']     = None
+                defaults['sample_block_n']     = 'auto'
 
         from geoxgb import GeoXGBClassifier, GeoXGBRegressor
         model_cls = GeoXGBClassifier if task == "classification" else GeoXGBRegressor

@@ -95,6 +95,11 @@ struct GeoXGBConfig {
     // Provides an implicit held-out validation set for monitoring convergence.
     bool   leave_last_block_out  = false;
 
+    // Loss / convergence / class weighting
+    std::string loss             = "squared_error"; // "squared_error" | "absolute_error"
+    double      convergence_tol  = 0.0;             // 0.0 = disabled
+    double      pos_class_weight = 1.0;             // binary classifier positive-class scale
+
     // Misc
     int    random_state       = 42;
     bool   variance_weighted  = true;

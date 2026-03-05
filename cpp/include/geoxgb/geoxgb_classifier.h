@@ -41,11 +41,16 @@ protected:
 
     Eigen::VectorXd gradients(const Eigen::VectorXd& y,
                                const Eigen::VectorXd& preds) const override {
-        // log-loss gradient: y - sigmoid(preds)
+        // log-loss gradient: y - sigmoid(preds), with optional positive-class weighting
         Eigen::VectorXd sig = preds.unaryExpr([](double v) {
             return 1.0 / (1.0 + std::exp(-v));
         });
-        return y - sig;
+        Eigen::VectorXd g = y - sig;
+        if (cfg_.pos_class_weight != 1.0) {
+            for (int i = 0; i < static_cast<int>(y.size()); ++i)
+                if (y[i] > 0.5) g[i] *= cfg_.pos_class_weight;
+        }
+        return g;
     }
 
     Eigen::VectorXd targets_from_gradients(

@@ -3,6 +3,7 @@
 #include <pybind11/stl.h>
 #include "geoxgb/geoxgb_regressor.h"
 #include "geoxgb/geoxgb_classifier.h"
+#include "geoxgb/geoxgb_multiclass.h"
 #include "hvrt/reduce.h"
 
 namespace py = pybind11;
@@ -53,6 +54,9 @@ PYBIND11_MODULE(_geoxgb_cpp, m) {
         .def_readwrite("adaptive_reduce_ratio", &GeoXGBConfig::adaptive_reduce_ratio)
         .def_readwrite("sample_block_n",        &GeoXGBConfig::sample_block_n)
         .def_readwrite("leave_last_block_out",  &GeoXGBConfig::leave_last_block_out)
+        .def_readwrite("loss",                  &GeoXGBConfig::loss)
+        .def_readwrite("convergence_tol",       &GeoXGBConfig::convergence_tol)
+        .def_readwrite("pos_class_weight",      &GeoXGBConfig::pos_class_weight)
         .def("__repr__", [](const GeoXGBConfig& c) {
             return "<GeoXGBConfig n_rounds=" + std::to_string(c.n_rounds) +
                    " lr=" + std::to_string(c.learning_rate) +
@@ -87,6 +91,24 @@ PYBIND11_MODULE(_geoxgb_cpp, m) {
         .def("yw_eff_trace", [](const GeoXGBRegressor& r) {
             return std::vector<double>(r.yw_eff_trace());
         }, "Per-refit effective y_weight trace (= y_weight * |ρ|).")
+        // ── Geometry / interpretability ──────────────────────────────────────
+        .def("X_z",               [](const GeoXGBRegressor& m) -> Eigen::MatrixXd {
+            return m.X_z(); })
+        .def("partition_ids",     [](const GeoXGBRegressor& m) -> Eigen::VectorXi {
+            return m.partition_ids(); })
+        .def("train_predictions", [](const GeoXGBRegressor& m) -> Eigen::VectorXd {
+            return m.train_predictions(); })
+        .def("to_z",  [](const GeoXGBRegressor& m,
+                          const Eigen::Ref<const Eigen::MatrixXd>& X) -> Eigen::MatrixXd {
+            return m.to_z(X); })
+        .def("apply", [](const GeoXGBRegressor& m,
+                          const Eigen::Ref<const Eigen::MatrixXd>& X) -> Eigen::VectorXi {
+            return m.apply(X); })
+        .def("feature_importances", [](const GeoXGBRegressor& m) {
+            return m.feature_importances(); })
+        .def("init_noise_modulation", &GeoXGBRegressor::init_noise_modulation)
+        .def("n_train",              &GeoXGBRegressor::n_train)
+        .def("n_init_reduced",       &GeoXGBRegressor::n_init_reduced)
         .def("__repr__", [](const GeoXGBRegressor& r) {
             return std::string("<CppGeoXGBRegressor fitted=") +
                    (r.is_fitted() ? "True" : "False") + ">";
@@ -132,8 +154,88 @@ PYBIND11_MODULE(_geoxgb_cpp, m) {
         .def("yw_eff_trace", [](const GeoXGBClassifier& c) {
             return std::vector<double>(c.yw_eff_trace());
         }, "Per-refit effective y_weight trace (= y_weight * |ρ|).")
+        // ── Geometry / interpretability ──────────────────────────────────────
+        .def("X_z",               [](const GeoXGBClassifier& m) -> Eigen::MatrixXd {
+            return m.X_z(); })
+        .def("partition_ids",     [](const GeoXGBClassifier& m) -> Eigen::VectorXi {
+            return m.partition_ids(); })
+        .def("train_predictions", [](const GeoXGBClassifier& m) -> Eigen::VectorXd {
+            return m.train_predictions(); })
+        .def("to_z",  [](const GeoXGBClassifier& m,
+                          const Eigen::Ref<const Eigen::MatrixXd>& X) -> Eigen::MatrixXd {
+            return m.to_z(X); })
+        .def("apply", [](const GeoXGBClassifier& m,
+                          const Eigen::Ref<const Eigen::MatrixXd>& X) -> Eigen::VectorXi {
+            return m.apply(X); })
+        .def("feature_importances", [](const GeoXGBClassifier& m) {
+            return m.feature_importances(); })
+        .def("init_noise_modulation", &GeoXGBClassifier::init_noise_modulation)
+        .def("n_train",              &GeoXGBClassifier::n_train)
+        .def("n_init_reduced",       &GeoXGBClassifier::n_init_reduced)
         .def("__repr__", [](const GeoXGBClassifier& c) {
             return std::string("<CppGeoXGBClassifier fitted=") +
                    (c.is_fitted() ? "True" : "False") + ">";
+        });
+
+    // ── Multiclass Classifier ───────────────────────────────────────────────
+    py::class_<GeoXGBMulticlassClassifier>(m, "CppGeoXGBMulticlassClassifier")
+        .def(py::init<GeoXGBConfig>(), py::arg("cfg") = GeoXGBConfig{})
+        .def("fit",
+             [](GeoXGBMulticlassClassifier& self,
+                const Eigen::Ref<const Eigen::MatrixXd>& X,
+                const Eigen::Ref<const Eigen::MatrixXd>& Y,
+                const Eigen::Ref<const Eigen::VectorXd>& class_weights)
+                    -> GeoXGBMulticlassClassifier& {
+                 return self.fit(X, Y, class_weights);
+             },
+             py::arg("X"), py::arg("Y"), py::arg("class_weights"),
+             py::return_value_policy::reference,
+             "Fit multiclass classifier. Y: (n, K) one-hot, class_weights: (K,).")
+        .def("predict",
+             [](const GeoXGBMulticlassClassifier& self,
+                const Eigen::Ref<const Eigen::MatrixXd>& X) {
+                 return self.predict_multi(X);
+             },
+             py::arg("X"),
+             "Argmax class labels. Returns ndarray (n,) int.")
+        .def("predict_proba",
+             [](const GeoXGBMulticlassClassifier& self,
+                const Eigen::Ref<const Eigen::MatrixXd>& X) {
+                 return self.predict_proba_multi(X);
+             },
+             py::arg("X"),
+             "Softmax probabilities. Returns ndarray (n, K).")
+        .def("predict_raw",
+             [](const GeoXGBMulticlassClassifier& self,
+                const Eigen::Ref<const Eigen::MatrixXd>& X) {
+                 return self.predict_raw_multi(X);
+             },
+             py::arg("X"),
+             "Raw logits. Returns ndarray (n, K).")
+        .def("is_fitted",             &GeoXGBMulticlassClassifier::is_fitted)
+        .def("convergence_round",     &GeoXGBMulticlassClassifier::convergence_round)
+        .def("last_noise_modulation", &GeoXGBMulticlassClassifier::last_noise_modulation)
+        .def("n_classes",             &GeoXGBMulticlassClassifier::n_classes)
+        .def("X_z",               [](const GeoXGBMulticlassClassifier& m) -> Eigen::MatrixXd {
+            return m.X_z(); })
+        .def("partition_ids",     [](const GeoXGBMulticlassClassifier& m) -> Eigen::VectorXi {
+            return m.partition_ids(); })
+        .def("to_z",  [](const GeoXGBMulticlassClassifier& m,
+                          const Eigen::Ref<const Eigen::MatrixXd>& X) -> Eigen::MatrixXd {
+            return m.to_z(X); })
+        .def("apply", [](const GeoXGBMulticlassClassifier& m,
+                          const Eigen::Ref<const Eigen::MatrixXd>& X) -> Eigen::VectorXi {
+            return m.apply(X); })
+        .def("feature_importances", [](const GeoXGBMulticlassClassifier& m) {
+            return m.feature_importances_multi(); })
+        .def("train_predictions_multi", [](const GeoXGBMulticlassClassifier& m) -> Eigen::MatrixXd {
+            return m.train_predictions_multi(); })
+        .def("init_noise_modulation", &GeoXGBMulticlassClassifier::init_noise_modulation)
+        .def("n_train",              &GeoXGBMulticlassClassifier::n_train)
+        .def("n_init_reduced",       &GeoXGBMulticlassClassifier::n_init_reduced)
+        .def("__repr__", [](const GeoXGBMulticlassClassifier& m) {
+            return std::string("<CppGeoXGBMulticlassClassifier fitted=") +
+                   (m.is_fitted() ? "True" : "False") +
+                   " K=" + std::to_string(m.n_classes()) + ">";
         });
 }

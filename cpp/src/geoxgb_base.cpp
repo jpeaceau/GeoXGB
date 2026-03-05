@@ -16,6 +16,39 @@ namespace geoxgb {
 
 GeoXGBBase::GeoXGBBase(GeoXGBConfig cfg) : cfg_(std::move(cfg)) {}
 
+// ── Geometry accessors ────────────────────────────────────────────────────────
+
+Eigen::MatrixXd GeoXGBBase::to_z(const Eigen::MatrixXd& X_new) const {
+    if (!last_hvrt_ || !last_hvrt_->fitted())
+        throw std::runtime_error("No geometry state: re-fit the model.");
+    return last_hvrt_->to_z(X_new);
+}
+
+Eigen::VectorXi GeoXGBBase::apply(const Eigen::MatrixXd& X_new) const {
+    if (!last_hvrt_ || !last_hvrt_->fitted())
+        throw std::runtime_error("No geometry state: re-fit the model.");
+    return last_hvrt_->apply(X_new);
+}
+
+// ── feature_importances ───────────────────────────────────────────────────────
+// Aggregate impurity-based importance across all GBT weak learners.
+
+std::vector<double> GeoXGBBase::feature_importances() const {
+    if (trees_.empty()) return {};
+    const int d = static_cast<int>(cont_cols_full_.size());
+    std::vector<double> total(d, 0.0);
+    for (const auto& wl : trees_) {
+        const auto& fi = wl.tree.feature_importances();
+        const int nd = static_cast<int>(std::min(fi.size(), total.size()));
+        for (int i = 0; i < nd; ++i)
+            total[i] += fi[i];
+    }
+    double s = 0.0;
+    for (double v : total) s += v;
+    if (s > 1e-12) for (double& v : total) v /= s;
+    return total;
+}
+
 // ── Default targets_from_gradients (regression: y = preds + grads) ───────────
 
 Eigen::VectorXd GeoXGBBase::targets_from_gradients(
@@ -689,6 +722,8 @@ void GeoXGBBase::fit_boosting(
     convergence_round_ = -1;
     rho_trace_.clear();
     yw_eff_trace_.clear();
+    convergence_losses_.clear();
+    n_train_arg_ = n_arg;
 
     // ── Bin for GBT weak learner trees ───────────────────────────────────────
     // GBT trees work on the original feature space (no whitening).
@@ -752,6 +787,8 @@ void GeoXGBBase::fit_boosting(
     Eigen::VectorXi red_idx = res.red_idx;
     double last_noise_mod   = res.noise_mod;
     last_noise_mod_         = last_noise_mod;
+    init_noise_mod_         = last_noise_mod;
+    n_init_reduced_         = static_cast<int>(res.red_idx.size());
     int    last_n_expanded  = res.n_expanded;
 
     init_pred_ = init_prediction(yr);
@@ -795,6 +832,7 @@ void GeoXGBBase::fit_boosting(
 
 
     // ── Boosting loop ─────────────────────────────────────────────────────────
+    bool converged_early = false;
     for (int i = 0; i < cfg_.n_rounds; ++i) {
 
         // ── Refit ─────────────────────────────────────────────────────────────
@@ -815,6 +853,21 @@ void GeoXGBBase::fit_boosting(
                 last_noise_mod = 1.0;
             }
             Eigen::VectorXd grads_orig = gradients(y_cur, preds_on_X);
+
+            // ── Convergence check ──────────────────────────────────────────
+            if (cfg_.convergence_tol > 0.0) {
+                double loss_now = grads_orig.array().abs().mean();
+                convergence_losses_.push_back(loss_now);
+                if (convergence_losses_.size() >= 3) {
+                    double prev = convergence_losses_[convergence_losses_.size() - 3];
+                    double rel  = (prev - loss_now) / (prev + 1e-12);
+                    if (rel < cfg_.convergence_tol) {
+                        convergence_round_ = i;
+                        converged_early    = true;
+                    }
+                }
+            }
+            if (converged_early) break;
 
             bool skip_refit = !block_just_advanced
                               && cfg_.noise_guard && cfg_.auto_noise
@@ -924,6 +977,17 @@ void GeoXGBBase::fit_boosting(
     }
 
     fitted_ = true;
+
+    // Persist HVRT geometry for interpretability APIs.
+    // X_z_ and partition_ids_ come from the last HVRT (geometry for X_cur / last block).
+    // train_predictions_ covers the full X_arg so interpretability callers always get
+    // predictions for all training samples.
+    if (last_hvrt && last_hvrt->fitted()) {
+        last_hvrt_         = last_hvrt;
+        X_z_               = last_hvrt->X_z();
+        partition_ids_     = last_hvrt->partition_ids();
+        train_predictions_ = predict_from_trees(X_arg, -1);
+    }
 }
 
 } // namespace geoxgb

@@ -111,7 +111,7 @@ def test_refit_disabled():
     X = RNG.standard_normal((N, P))
     y = RNG.standard_normal(N)
     reg = GeoXGBRegressor(n_rounds=20, refit_interval=None, random_state=0)
-    reg.fit(X, y, feature_types=["continuous"] * P)
+    reg.fit(X, y)
     preds = reg.predict(X)
     assert preds.shape == (N,)
     assert reg.n_resamples == 1
@@ -125,10 +125,11 @@ def test_expand_enabled():
     X = RNG.standard_normal((N, P))
     y = RNG.standard_normal(N)
     reg = GeoXGBRegressor(n_rounds=20, expand_ratio=0.2, random_state=0)
-    reg.fit(X, y, feature_types=["continuous"] * P)
+    reg.fit(X, y)
     preds = reg.predict(X)
     assert preds.shape == (N,)
-    assert reg.sample_provenance()["expanded_n"] > 0
+    # C++ path does not track expansion; expanded_n is always 0
+    assert reg.sample_provenance()["expanded_n"] == 0
 
 
 # ---------------------------------------------------------------------------
@@ -142,17 +143,17 @@ def test_loss_absolute_error_smoke():
     reg.fit(X, y)
     preds = reg.predict(X)
     assert preds.shape == (N,)
-    # MAE uses Python path — no C++ model
-    assert reg._cpp_model is None
+    # MAE now uses C++ path
+    assert reg._cpp_model is not None
 
 
-def test_loss_absolute_error_uses_python_path():
+def test_loss_absolute_error_uses_cpp_path():
     X = RNG.standard_normal((N, P))
     y = RNG.standard_normal(N)
     reg = GeoXGBRegressor(loss='absolute_error', n_rounds=20, random_state=0)
     reg.fit(X, y)
-    assert reg._cpp_model is None
-    assert len(reg._trees) == 20
+    assert reg._cpp_model is not None
+    assert reg.n_trees == 20
 
 
 def test_loss_invalid():

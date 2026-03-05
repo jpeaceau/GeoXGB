@@ -19,7 +19,10 @@ namespace geoxgb {
 //   gradients(y, preds)      → negative gradient vector
 //   to_probability(raw)      → optional sigmoid transform (classifier only)
 
+class GeoXGBMulticlassClassifier;  // forward decl
+
 class GeoXGBBase {
+    friend class GeoXGBMulticlassClassifier;
 public:
     explicit GeoXGBBase(GeoXGBConfig cfg = GeoXGBConfig{});
     virtual ~GeoXGBBase() = default;
@@ -35,11 +38,36 @@ public:
     // Noise modulation from last resample (0=noise, 1=clean)
     double last_noise_modulation() const { return last_noise_mod_; }
 
+    // Noise modulation from the INITIAL resample (proxy for dataset SNR).
+    double init_noise_modulation() const { return init_noise_mod_; }
+
+    // Original training n (before any block cycling subsetting).
+    int n_train()       const { return n_train_arg_; }
+
+    // Samples kept after the initial HVRT reduce (before expansion).
+    int n_init_reduced() const { return n_init_reduced_; }
+
     // Per-refit trace of |ρ(geom_target, residuals)| and effective y_weight.
     // Length = number of refits performed.  Empty when adaptive_y_weight=false
     // or refit_interval=0.  Use for gradient analysis post-fit.
     const std::vector<double>& rho_trace()    const { return rho_trace_; }
     const std::vector<double>& yw_eff_trace() const { return yw_eff_trace_; }
+
+    // ── Geometry / interpretability accessors ─────────────────────────────────
+    // Populated at the end of fit_boosting() from the most recent HVRT geometry.
+    // X_z(): whitened training data (full X, not just reduced).
+    // partition_ids(): per-sample HVRT partition assignment.
+    // train_predictions(): ensemble raw predictions on full training X.
+    // to_z(): whiten new query points using the same whitener.
+    // apply(): assign new query points to partition IDs.
+    const Eigen::MatrixXd& X_z()               const { return X_z_; }
+    const Eigen::VectorXi& partition_ids()     const { return partition_ids_; }
+    const Eigen::VectorXd& train_predictions() const { return train_predictions_; }
+    Eigen::MatrixXd        to_z(const Eigen::MatrixXd& X_new) const;
+    Eigen::VectorXi        apply(const Eigen::MatrixXd& X_new) const;
+
+    // Aggregate impurity-based feature importance across all GBT weak learners.
+    std::vector<double> feature_importances() const;
 
 protected:
     // Called by subclass fit(); handles the full boosting + resampling loop.
@@ -61,8 +89,12 @@ protected:
     bool         fitted_            = false;
     int          convergence_round_ = -1;
     double       last_noise_mod_    = 1.0;
+    double       init_noise_mod_    = 1.0;    // noise mod at initial resample
+    int          n_train_arg_       = 0;      // full training n passed to fit_boosting
+    int          n_init_reduced_    = 0;      // red_idx.size() at initial resample
     std::vector<double> rho_trace_;     // |ρ(geom, residuals)| at each refit
     std::vector<double> yw_eff_trace_;  // effective y_weight used at each refit
+    std::vector<double> convergence_losses_;  // mean |grad| at each refit boundary
 
 private:
     // ── Per-tree state ────────────────────────────────────────────────────────
@@ -101,6 +133,12 @@ private:
     // ── Fitted state ─────────────────────────────────────────────────────────
     double                          init_pred_  = 0.0;
     std::vector<WeakLearner>        trees_;
+
+    // ── Persistent geometry (populated at end of fit_boosting) ────────────────
+    std::shared_ptr<hvrt::HVRT>  last_hvrt_;          // HVRT at last refit
+    Eigen::MatrixXd              X_z_;                // (n_train × d) whitened full training data
+    Eigen::VectorXi              partition_ids_;       // (n_train,) partition membership
+    Eigen::VectorXd              train_predictions_;   // (n_train,) ensemble preds on X_arg
 
     // ── kNN scratch buffer ────────────────────────────────────────────────────
     // knn_assign_y allocates a (n_syn × n_red) distance matrix each call.
