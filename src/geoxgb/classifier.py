@@ -246,6 +246,9 @@ class GeoXGBClassifier(_GeoXGBBase):
                     and self._class_weights is None and self.convergence_tol is None):
                 from geoxgb._cpp_backend import make_cpp_config, CppGeoXGBClassifier as _CppClf
                 params = {k: getattr(self, k) for k in self._PARAM_NAMES if hasattr(self, k)}
+                if params.get('sample_block_n') == 'auto':
+                    n = len(X)
+                    params['sample_block_n'] = None if n <= 5000 else 500 + (n - 5000) // 50
                 self._cpp_model = _CppClf(make_cpp_config(**params))
                 self._cpp_model.fit(X, y_enc.astype(np.float64))
                 cr = self._cpp_model.convergence_round()

@@ -41,7 +41,8 @@
       "Bash(.venv/Scripts/pip index:*)",
       "Bash(pip show:*)",
       "Bash(rm:*)",
-      "Bash(git:*)"
+      "Bash(git:*)",
+      "Bash(.venv/Scripts/pytest:*)"
     ]
   }
 }

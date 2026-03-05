@@ -68,13 +68,20 @@ class GeoXGBRegressor(_GeoXGBBase):
     adaptive_reduce_ratio : bool, default=False
         Dynamically increase reduce_ratio for heavy-tailed gradients.
         Recommended with ``loss='absolute_error'``.
-    max_resample_n : int or None, default=None
-        If set, randomly subsample the training data to at most this many
-        samples before fitting.  Caps all downstream costs (HVRT partition
-        fitting, gradient tracking, GBT tree training) proportionally.
-        Recommended for n > 20 000: ``max_resample_n=10_000`` brings
-        training time close to XGBoost's default while retaining GeoXGB's
-        geometric advantages on the representative subset.
+    sample_block_n : int, 'auto', or None, default='auto'
+        Block size for epoch-based data cycling.  When active and n > block size,
+        the full dataset is divided into non-overlapping blocks (deterministic
+        permutation seeded by random_state).  At each refit_interval the boosting
+        loop advances to the next block, cycling through epochs, giving progressive
+        exposure to the full dataset.  All per-round costs scale with block size.
+        ``'auto'`` (default): ``500 + (n − 5000) // 50`` when n > 5 000, else disabled.
+        Gives ~500 at n=5k, ~600 at n=10k, ~1 400 at n=50k, ~2 400 at n=100k.
+        ``None``: disabled.  Integer: explicit block size.
+        Included in HPO via ``GeoXGBOptimizer`` when n is large enough.
+    leave_last_block_out : bool, default=False
+        When True, the last block of each epoch is never trained on and is
+        stored as ``model.held_out_X_`` / ``model.held_out_y_`` for external
+        validation or convergence monitoring.
     random_state : int, default=42
     """
 
@@ -115,7 +122,8 @@ class GeoXGBRegressor(_GeoXGBBase):
         hvrt_auto_reduce_threshold=None,
         partitioner='pyramid_hart',
         adaptive_reduce_ratio=False,
-        max_resample_n=None,
+        sample_block_n='auto',
+        leave_last_block_out=False,
     ):
         if loss not in ('squared_error', 'absolute_error'):
             raise ValueError(
@@ -157,7 +165,8 @@ class GeoXGBRegressor(_GeoXGBBase):
             hvrt_auto_reduce_threshold=hvrt_auto_reduce_threshold,
             partitioner=partitioner,
             adaptive_reduce_ratio=adaptive_reduce_ratio,
-            max_resample_n=max_resample_n,
+            sample_block_n=sample_block_n,
+            leave_last_block_out=leave_last_block_out,
         )
 
     def fit(self, X, y, feature_types=None):
@@ -190,11 +199,16 @@ class GeoXGBRegressor(_GeoXGBBase):
             and self.loss == 'squared_error'
             and feature_types is None
             and self.convergence_tol is None
+            and not self.leave_last_block_out
         )
 
         if _use_cpp:
             from geoxgb._cpp_backend import make_cpp_config, CppGeoXGBRegressor as _CppReg
             params = {k: getattr(self, k) for k in self._PARAM_NAMES if hasattr(self, k)}
+            # Resolve 'auto' sample_block_n to an int before passing to C++ config.
+            if params.get('sample_block_n') == 'auto':
+                n = len(X)
+                params['sample_block_n'] = None if n <= 5000 else 500 + (n - 5000) // 50
             self._cpp_model = _CppReg(make_cpp_config(**params))
             self._cpp_model.fit(X, y)
             self._is_fitted = True

@@ -83,12 +83,17 @@ struct GeoXGBConfig {
     // Adaptive reduce ratio: increase reduce_ratio for heavy-tailed gradient distributions
     bool        adaptive_reduce_ratio = false;
 
-    // Scalability: cap working set at fit start.
-    // -1 = disabled; > 0 → randomly subsample X to max_resample_n rows before
-    // fitting.  All downstream costs (HVRT fit, GBT training, predict-on-X
-    // gradient tracking) then scale with max_resample_n rather than full n.
-    // Recommended for n > 20 000: set to 10 000–50 000.
-    int    max_resample_n     = -1;
+    // Scalability: epoch-based block cycling.
+    // -1 = disabled.  > 0 → divide full training set into non-overlapping blocks
+    // of sample_block_n rows (epoch-permuted, deterministic via random_state).
+    // At each refit_interval, advance to the next block; all downstream costs
+    // (HVRT fit, GBT training, predict-on-X tracking) scale with sample_block_n
+    // rather than full n.  Recommended for n > 20 000: 5 000–20 000.
+    // Next block is pre-fetched asynchronously while the current block trains.
+    int    sample_block_n        = -1;
+    // When true, the last block of each epoch is held out (never trained on).
+    // Provides an implicit held-out validation set for monitoring convergence.
+    bool   leave_last_block_out  = false;
 
     // Misc
     int    random_state       = 42;

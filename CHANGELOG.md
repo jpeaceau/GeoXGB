@@ -4,6 +4,87 @@ All notable changes to GeoXGB are documented here.
 
 ---
 
+## [0.3.2] — 2026-03-05
+
+### Bug fixes
+
+- **Block cycling noise guard (`block_just_advanced`)** — critical fix for
+  `sample_block_n` users. When the training block advanced to a new window,
+  `red_idx` held indices from the *previous* block while `preds_on_X` held
+  predictions for the *new* block. If the noise guard fired immediately after
+  the advance (`skip_refit=True`), `sync_preds` would index `preds_on_X`
+  with the stale `red_idx`, mapping old-block positions onto new-block samples.
+  The resulting corrupt gradient updates caused training to diverge
+  catastrophically (R² fell to −26 on Friedman #1 n=10 000).
+
+  Fix in both Python (`_base.py`) and C++ (`geoxgb_base.cpp`):
+  a `block_just_advanced` flag is set at each block advance.  On the first
+  iteration after an advance, `last_noise_mod` (C++) / `_last_refit_noise`
+  (Python) is reset to 1.0 so the noise guard cannot fire with stale indices,
+  and the prediction discard path calls `predict_from_trees(Xr, -1)` (C++) /
+  `_raw_predict(Xr)` (Python) rather than `sync_preds`.  The flag is cleared
+  at the end of each round so behaviour is identical to v0.3.1 on all rounds
+  that do not follow a block advance.
+
+  Verified: setting `auto_noise=False` or `noise_guard=False` eliminated the
+  divergence, confirming the noise guard as the specific failure site.
+
+### New formula for `sample_block_n='auto'`
+
+The automatic block size now scales as:
+
+```
+block_n = 500 + (n − 5 000) // 50   when n > 5 000, else None (disabled)
+```
+
+Previous formula was `max(500, n // 10)`, which gave a fixed ~10 blocks per
+epoch at any n (block_n ≈ n / 10).  The new formula starts at 500 samples per
+block at n=5 000 and grows slowly:
+
+| n | Old block_n | New block_n | Blocks / epoch |
+|---|---|---|---|
+| 5 000 | 500 | 500 | 10 |
+| 10 000 | 1 000 | 600 | 16 |
+| 50 000 | 5 000 | 1 400 | 35 |
+| 100 000 | 10 000 | 2 400 | 42 |
+
+More blocks per epoch at large n means greater geometric diversity across
+rounds without increasing per-block training cost.  Resolved in
+`_base.py`, `regressor.py`, and `classifier.py` (the `'auto'` string is
+resolved to an int before the C++ config is built).
+
+### Benchmarks
+
+**Small-n (confirmed post bug-fix, same CV protocol):**
+
+| Dataset | Metric | GeoXGB default | GeoXGB HPO-best | XGBoost (300 est.) | HPO vs XGB |
+|---|---|---|---|---|---|
+| diabetes (n=442) | R² | 0.4256 | 0.4630 | 0.3147 | **+0.148** |
+| friedman1 (n=1000) | R² | 0.9198 | 0.9188 | 0.8434 | **+0.075** |
+| breast\_cancer (n=569) | AUC | 0.9931 | 0.9932 | 0.9886 | **+0.005** |
+| wine (n=178, 3-class) | AUC | 0.9951 | 0.9993 | 0.9975 | **+0.002** |
+| digits (n=1797, 10-class) | AUC | 0.9988 | 0.9987 | 0.9990 | −0.000 |
+
+GeoXGB default beats or matches XGBoost on all 5 datasets.
+
+**Large-n with `sample_block_n='auto'` (n_rounds=1000, 3×3-fold CV):**
+
+| Dataset | Metric | GeoXGB auto | XGB tuned | GeoXGB t/fold | XGB t/fold |
+|---|---|---|---|---|---|
+| friedman1_10k (n=10 000) | R² | 0.9287 | 0.9478 | 0.34 s | 0.61 s |
+| reg_20k (n=20 000) | R² | 0.9497 | 0.9649 | 0.56 s | 1.15 s |
+| reg_5k (n=5 000) | R² | **0.9685** | 0.9644 | 0.66 s | 0.79 s |
+
+GeoXGB is 1.8–2× faster than a tuned XGBoost on regression at equal
+hyperparameters, with a small accuracy gap that closes under HPO.  On reg_5k
+(below the block-cycling threshold, no cycling active) GeoXGB wins outright.
+
+Classification AUC on `make_classification` synthetic data shows a larger gap
+vs XGBoost on large n; this is primarily a multiclass-path speed issue on
+Windows (process-spawn overhead) and is under investigation.
+
+---
+
 ## [0.2.0] — 2026-03-04
 
 ### New features

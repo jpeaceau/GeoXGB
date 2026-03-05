@@ -64,7 +64,8 @@ _PYTHON_TO_CPP = {
     "method":                "reduce_method",
     "generation_strategy":   "generation_strategy",
     "adaptive_reduce_ratio": "adaptive_reduce_ratio",
-    "max_resample_n":        "max_resample_n",
+    "sample_block_n":        "sample_block_n",
+    "leave_last_block_out":  "leave_last_block_out",
 }
 
 
@@ -98,7 +99,12 @@ def make_cpp_config(**kwargs) -> "GeoXGBConfig":
     for py_key, cpp_key in _PYTHON_TO_CPP.items():
         if py_key in kwargs:
             v = kwargs[py_key]
-            if v is not None:
-                setattr(cfg, cpp_key, v)
+            if v is None:
+                continue
+            # 'auto' sample_block_n: caller should resolve before make_cpp_config;
+            # but guard here in case it slips through — treat as disabled.
+            if py_key == 'sample_block_n' and v == 'auto':
+                continue
+            setattr(cfg, cpp_key, v)
 
     return cfg
