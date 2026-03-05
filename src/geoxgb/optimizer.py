@@ -225,21 +225,26 @@ class GeoXGBOptimizer:
             defaults     = dict(self._DEFAULTS_REGRESSION)
             search_space = dict(self._SEARCH_SPACE_REGRESSION)
 
-        # Dynamically add sample_block_n when n is large enough for cycling to
-        # matter, and the user hasn't fixed it via fixed_params.
-        # Threshold 30k: block cycling hurts HPO at moderate n (FAnova: 86% of
-        # trial variance on 8k data).  Never include None — full-dataset mode
-        # is both slower and worse than any reasonable block size at large n.
+        # Always enable block cycling at n >= 5000 to keep per-trial cost
+        # manageable.  sample_block_n='auto' resolves to a calibrated block
+        # size in the regressor/classifier (sqrt(n)*15*ri_scale, floor 2000).
+        # At n > 30k we also search explicit block sizes via the search space.
         n_samples = len(X)
-        if n_samples > 30_000 and 'sample_block_n' not in fixed_params:
-            blk_candidates = []
-            for frac in (0.05, 0.1, 0.2, 0.3):
-                bn = int(n_samples * frac)
-                if 2000 <= bn < n_samples:
-                    blk_candidates.append(bn)
-            if blk_candidates:
-                search_space['sample_block_n'] = blk_candidates
-                defaults['sample_block_n']     = 'auto'
+        if n_samples >= 5_000 and 'sample_block_n' not in fixed_params:
+            fixed_params = {**fixed_params, 'sample_block_n': 'auto'}
+            # At very large n, also search explicit block fractions
+            if n_samples > 30_000:
+                blk_candidates = []
+                for frac in (0.05, 0.1, 0.2, 0.3):
+                    bn = int(n_samples * frac)
+                    if 2000 <= bn < n_samples:
+                        blk_candidates.append(bn)
+                if blk_candidates:
+                    search_space['sample_block_n'] = blk_candidates
+                    defaults['sample_block_n']     = 'auto'
+                    # Remove from fixed_params so it can be searched
+                    fixed_params = {k: v for k, v in fixed_params.items()
+                                    if k != 'sample_block_n'}
 
         from geoxgb import GeoXGBClassifier, GeoXGBRegressor
         model_cls = GeoXGBClassifier if task == "classification" else GeoXGBRegressor
