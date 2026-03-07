@@ -431,13 +431,20 @@ Eigen::VectorXi PartitionTree::build(
         std::shared_ptr<HistogramData> parent_hist;
         // Sibling's histogram data (set after split, for the larger child to subtract)
         std::shared_ptr<HistogramData> sibling_hist;
-        bool use_subtraction = false;  // true = derive from parent - sibling
+        bool use_subtraction;
+        QueueEntry(int ni, std::vector<int> idx, int d,
+                   std::shared_ptr<HistogramData> ph,
+                   std::shared_ptr<HistogramData> sh,
+                   bool us)
+            : node_idx(ni), indices(std::move(idx)), depth(d),
+              parent_hist(std::move(ph)), sibling_hist(std::move(sh)),
+              use_subtraction(us) {}
     };
 
     std::vector<int> all_indices(n);
     std::iota(all_indices.begin(), all_indices.end(), 0);
     std::queue<QueueEntry> bfs;
-    bfs.push({0, std::move(all_indices), 0, nullptr, nullptr, false});
+    bfs.emplace(0, std::move(all_indices), 0, nullptr, nullptr, false);
 
     int leaf_count = 0;
     Eigen::VectorXi partition_ids(n);
@@ -637,15 +644,15 @@ Eigen::VectorXi PartitionTree::build(
             }
 
             // Push: smaller gets its scattered histogram, larger gets subtracted histogram
-            bfs.push({smaller_node, std::move(smaller_idx), depth + 1,
-                      smaller_hist, nullptr, false});
-            bfs.push({larger_node,  std::move(larger_idx),  depth + 1,
-                      larger_hist,  nullptr, false});
+            bfs.emplace(smaller_node, std::move(smaller_idx), depth + 1,
+                      smaller_hist, nullptr, false);
+            bfs.emplace(larger_node,  std::move(larger_idx),  depth + 1,
+                      larger_hist,  nullptr, false);
         } else {
-            bfs.push({left_node,  std::move(left_idx),  depth + 1,
-                      nullptr, nullptr, false});
-            bfs.push({right_node, std::move(right_idx), depth + 1,
-                      nullptr, nullptr, false});
+            bfs.emplace(left_node,  std::move(left_idx),  depth + 1,
+                      nullptr, nullptr, false);
+            bfs.emplace(right_node, std::move(right_idx), depth + 1,
+                      nullptr, nullptr, false);
         }
     }
 
