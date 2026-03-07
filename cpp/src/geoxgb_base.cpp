@@ -5,6 +5,7 @@
 #include "hvrt/target.h"
 #include "hvrt/reduce.h"
 #include <algorithm>
+#include <cstring>
 #include <numeric>
 #include <stdexcept>
 #include <cmath>
