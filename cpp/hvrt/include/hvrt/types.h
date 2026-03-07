@@ -52,6 +52,8 @@ struct HVRTConfig {
     SplitStrategy    split_strategy  = SplitStrategy::Best;
     PartitionerType  partitioner_type = PartitionerType::HVRT;
     GenerationStrategy gen_strategy  = GenerationStrategy::Epanechnikov;
+    bool   skip_expander = false;  // skip expander_.prepare() in fit/refit (for fast_refit)
+    double colsample_bytree = 1.0; // fraction of features per tree (1.0 = all)
 };
 
 // ── Output structs ────────────────────────────────────────────────────────────

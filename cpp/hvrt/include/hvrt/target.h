@@ -46,6 +46,12 @@ Eigen::VectorXd compute_selective_target(const Eigen::MatrixXd& X_z,
                                           const Eigen::VectorXd& resid,
                                           int k_pairs = -1);
 
+// Third elementary symmetric polynomial e₃ target: O(n·d²).
+// e₃ = (S³ + 2·p₃ − 3·Q·S) / 6 via Newton's identities, where
+// S = Σzᵢ (power sum 1), Q = Σzᵢ² (power sum 2), p₃ = Σzᵢ³.
+// Noise-invariant: products of distinct indices kill noise cross-terms.
+Eigen::VectorXd compute_e3_target(const Eigen::MatrixXd& X_z);
+
 // Internal helper: standardize a vector to zero-mean unit-variance (population).
 Eigen::VectorXd zscore(const Eigen::VectorXd& v);
 

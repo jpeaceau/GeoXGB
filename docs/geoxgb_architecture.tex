@@ -1,0 +1,565 @@
+\documentclass[11pt,a4paper]{article}
+\usepackage[margin=2.5cm]{geometry}
+\usepackage{amsmath,amssymb,amsthm}
+\usepackage{algorithm,algorithmic}
+\usepackage{bm}
+\usepackage{hyperref}
+\usepackage{enumitem}
+
+\newcommand{\R}{\mathbb{R}}
+\newcommand{\E}{\mathbb{E}}
+\newcommand{\Var}{\operatorname{Var}}
+\newcommand{\sign}{\operatorname{sign}}
+\newcommand{\zscore}{\operatorname{zscore}}
+\newcommand{\med}{\operatorname{med}}
+\DeclareMathOperator*{\argmin}{argmin}
+
+\theoremstyle{definition}
+\newtheorem{definition}{Definition}
+\newtheorem{remark}{Remark}
+
+\title{GeoXGB: Mathematical Architecture of\\Geometry-Aware Gradient Boosting}
+\author{}
+\date{}
+
+\begin{document}
+\maketitle
+
+\section{Setup and Notation}
+
+Let $X \in \R^{n \times d}$ be the training feature matrix and $y \in \R^n$ the
+target vector.  Throughout, subscript $i$ indexes samples and superscript $(j)$
+indexes features.  We write $x_i \in \R^d$ for the $i$-th row of $X$.
+
+\subsection{Whitening}
+
+HVRT operates on \emph{whitened} (z-scored) features.  The whitener computes
+per-column statistics:
+\begin{equation}
+    z_i^{(j)} = \frac{x_i^{(j)} - \mu^{(j)}}{\sigma^{(j)} + \epsilon},
+    \qquad
+    \mu^{(j)} = \frac{1}{n}\sum_{i=1}^{n} x_i^{(j)},
+    \quad
+    \sigma^{(j)} = \sqrt{\frac{1}{n}\sum_{i=1}^{n} \bigl(x_i^{(j)} - \mu^{(j)}\bigr)^2},
+\end{equation}
+with $\epsilon = 10^{-8}$.  This gives the whitened matrix $Z \in \R^{n \times d}$
+with each column approximately $\mathcal{N}(0,1)$.  The whitener parameters
+$(\mu, \sigma)$ are computed \emph{once} at the initial HVRT fit and frozen
+for all subsequent refits.
+
+\subsection{Inverse Transform}
+
+Synthetic samples generated in $z$-space are mapped back to the original feature
+space via
+\begin{equation}
+    \hat{x}^{(j)} = z^{(j)} \cdot \sigma^{(j)} + \mu^{(j)}.
+\end{equation}
+
+
+\section{The Geometry Target}
+
+\subsection{Pairwise Cooperation Target (HVRT)}
+
+For the default HVRT partitioner ($d \le 50$), the geometry target $T \in \R^n$
+is the \emph{pairwise cooperation statistic}:
+\begin{equation}
+    T_i = \zscore\!\Biggl(\,\sum_{a < b} \zscore\bigl(z_i^{(a)} \cdot z_i^{(b)}\bigr)\Biggr),
+\end{equation}
+where $\zscore(v) = (v - \bar{v}) / \sigma_v$ standardises a vector to zero mean
+and unit variance (population).
+
+\begin{remark}[Algebraic identity]
+$T$ is proportional to the second elementary symmetric polynomial:
+\[
+    \sum_{a < b} z_i^{(a)} z_i^{(b)}
+    = \frac{1}{2}\Bigl[\Bigl(\sum_j z_i^{(j)}\Bigr)^{\!2} - \sum_j \bigl(z_i^{(j)}\bigr)^2\Bigr]
+    = \frac{S_i^2 - Q_i}{2}
+    = e_2(\bm{z}_i),
+\]
+where $S_i = \sum_j z_i^{(j)}$ and $Q_i = \|\bm{z}_i\|_2^2$.  The z-score
+normalisation within each pair column absorbs the scale but preserves the
+rank ordering, so $T$ partitions samples along iso-$e_2$ hyperboloids
+in $z$-space.  Computational cost: $\mathcal{O}(n \cdot d^2)$.
+\end{remark}
+
+\begin{remark}[Noise invariance]
+If each feature is corrupted by independent additive noise
+$\tilde{z}^{(j)} = z^{(j)} + \varepsilon^{(j)}$ with
+$\E[\varepsilon^{(j)}] = 0$, then
+\[
+    \E[\tilde{S}^2 - \tilde{Q}]
+    = \E[S^2 - Q] + d\sigma_\varepsilon^2 - d\sigma_\varepsilon^2
+    = \E[S^2 - Q].
+\]
+The additive noise bias cancels exactly because both $S^2$ and $Q$ are
+degree-2 in the features.  This is the HVRT noise invariance theorem.
+\end{remark}
+
+\subsection{Alternative Targets}
+
+\begin{itemize}[nosep]
+    \item \textbf{HART}: $T_i = \zscore\!\bigl(\frac{1}{2}(\|z_i\|_1^2 - \|z_i\|_2^2)\bigr) = \zscore\!\bigl(\sum_{a<b}|z_i^{(a)}||z_i^{(b)}|\bigr)$.
+        Degree-2, noise-invariant, $\mathcal{O}(n \cdot d)$.
+    \item \textbf{PyramidHART}: $T_i = \zscore(|S_i| - \|z_i\|_1)$.
+        Degree-1, outlier-cancelling, $\mathcal{O}(n \cdot d)$.
+    \item \textbf{FastHART} ($d > 50$): $T_i = \zscore(S_i)$.
+        Degree-1, $\mathcal{O}(n \cdot d)$.
+\end{itemize}
+
+
+\section{Blended Target and Partition Tree}
+
+\subsection{Y-Weight Blending}
+
+The pure geometry target $T$ is blended with the $y$-signal (raw targets on
+initial fit, or residual gradients on refit) to bias the partition tree towards
+regions that are both geometrically interesting \emph{and} predictively
+important.
+
+\begin{align}
+    y_{\text{norm}} &= \frac{y - y_{\min}}{y_{\max} - y_{\min}} \in [0,1]^n, \\
+    y_{\text{dev}}  &= \bigl|y_{\text{norm}} - \med(y_{\text{norm}})\bigr|, \\
+    y_{\text{comp}} &= \zscore(y_{\text{dev}}), \\
+    t_{\text{blend}} &= \zscore\!\bigl((1 - w_y)\,\zscore(T) + w_y\,y_{\text{comp}}\bigr),
+\end{align}
+where $w_y \in [0,1]$ is the \texttt{y\_weight} parameter.
+
+\begin{remark}
+$y_{\text{comp}}$ measures distance from the median response: extreme $y$
+values (both high and low) get large $y_{\text{comp}}$.  This is deliberate ---
+the partition tree should separate extreme-response regions regardless of sign,
+because both tails carry the most predictive information for gradient boosting.
+\end{remark}
+
+\subsection{Partition Tree}
+
+The blended target $t_{\text{blend}}$ is used as the splitting criterion for a
+variance-reduction decision tree on $Z$.  The tree greedily minimises
+\begin{equation}
+    \argmin_{j, \theta} \;\;
+    \sum_{i \in L} (t_i - \bar{t}_L)^2 + \sum_{i \in R} (t_i - \bar{t}_R)^2,
+    \qquad
+    L = \{i : z_i^{(j)} \le \theta\},\;\; R = \{i : z_i^{(j)} > \theta\},
+\end{equation}
+producing a set of $P$ leaf partitions $\{\mathcal{P}_1, \dots, \mathcal{P}_P\}$.
+Each sample $i$ is assigned to exactly one partition $p(i)$.
+
+The partition tree operates on binned features (16 bins) for speed, using
+histogram-based split enumeration.  The tree depth and leaf sizes are
+auto-tuned: $\texttt{min\_samples\_leaf} = 10$,
+$\texttt{max\_partitions} = \min(1500,\; 3n / 20)$.
+
+
+\section{Reduce--Expand Resampling}
+
+Given the partition structure $\{(\mathcal{P}_p, Z_p)\}_{p=1}^{P}$, HVRT
+performs a \emph{reduce} step (discard uninformative samples) followed by an
+optional \emph{expand} step (generate synthetic samples).
+
+\subsection{Budget Allocation}
+
+Each partition $p$ receives a budget $b_p$ of how many samples to retain
+(or generate).  Two modes:
+\begin{itemize}[nosep]
+    \item \textbf{Proportional} (default): $b_p \propto |\mathcal{P}_p|$.
+    \item \textbf{Variance-weighted}: $b_p \propto \bar{v}_p$ where
+        $\bar{v}_p = \frac{1}{|\mathcal{P}_p|}\sum_{i \in \mathcal{P}_p} \frac{1}{d}\sum_j |z_i^{(j)}|$
+        is the mean absolute deviation within partition $p$.
+\end{itemize}
+The total budget is $n_{\text{keep}} = \lfloor n \cdot r_{\text{eff}} \rfloor$,
+where $r_{\text{eff}}$ is the effective reduce ratio (see \S\ref{sec:noise}).
+
+\subsection{Variance-Ordered Reduction}
+
+Within each partition $p$ of size $n_p$ with budget $b_p < n_p$, the
+\textbf{variance-ordered} selector retains samples that maximise geometric
+diversity:
+
+\begin{enumerate}[nosep]
+    \item Compute the $n_p \times n_p$ pairwise squared-distance matrix
+        $D_{ij} = \|z_i - z_j\|_2^2$ for $i, j \in \mathcal{P}_p$.
+    \item For each $i$, find the $k$-nearest neighbours ($k = 5$) and compute
+        $v_i = \Var(\{D_{ij}\}_{j \in \text{kNN}(i)})$ --- the local distance variance.
+    \item Sort by $v_i$ descending and retain the top $b_p$ samples.
+\end{enumerate}
+
+High local-distance-variance points lie near partition boundaries or in
+heterogeneous regions of $z$-space.  Retaining them preserves the geometric
+``skeleton'' of each partition while discarding interior samples that are
+well-represented by their neighbours.
+
+\begin{remark}[Scalability]
+When $n_p > 400$, a random subsample of $400$ candidates is drawn first,
+variance-ordering is applied to the subsample, and the selected indices are
+mapped back.  When $b_p / n_p \ge 0.65$, the selection degenerates to random
+sampling (Fisher--Yates) since the quality gain over random is negligible at
+high retention fractions.
+\end{remark}
+
+\subsection{Expansion: Synthetic Sample Generation}
+
+When $\texttt{expand\_ratio} > 0$ or $n < \texttt{min\_train\_samples}$,
+HVRT generates $n_{\text{syn}} = \lfloor n \cdot e \cdot \hat{\nu} \rfloor$
+synthetic samples in $z$-space, where $e$ is the expand ratio and
+$\hat{\nu}$ is the noise modulation (\S\ref{sec:noise}).
+
+Synthetic samples are generated per-partition via kernel density estimation.
+For the \textbf{Epanechnikov} kernel (default): within partition $p$ with
+samples $\{z_i\}_{i \in \mathcal{P}_p}$, draw a centre $z_c$ uniformly at
+random from the partition's training points, then sample
+\begin{equation}
+    z_{\text{syn}} = z_c + h_p \cdot u, \qquad u \sim \text{Epanechnikov}(d),
+\end{equation}
+where $h_p$ is the per-partition bandwidth (Scott's rule:
+$h_p = n_p^{-1/(d+4)}\,\hat{\sigma}_p$).
+
+The synthetic $z$-vectors are inverse-transformed back to feature space,
+giving $X_{\text{syn}} \in \R^{n_{\text{syn}} \times d}$.
+
+\subsection{Y-Assignment for Synthetic Samples}
+\label{sec:knn}
+
+Synthetic samples have features but no target values.  These are assigned
+via \textbf{inverse-distance-weighted $k$-NN} ($k = 3$) in $z$-space:
+\begin{equation}
+    \hat{y}_{\text{syn}} = \frac{\sum_{j \in \text{kNN}} w_j \, y_j}{\sum_{j \in \text{kNN}} w_j},
+    \qquad
+    w_j = \frac{1}{\|z_{\text{syn}} - z_j\|_2 + \epsilon},
+\end{equation}
+where the nearest-neighbour search is over the \emph{reduced} real training
+set $\{(z_i, y_i)\}_{i \in \mathcal{R}}$ and $\epsilon = 10^{-8}$.
+
+The final training matrix for each boosting interval is:
+\begin{equation}
+    \tilde{X} = \begin{bmatrix} X_{\text{red}} \\ X_{\text{syn}} \end{bmatrix}
+    \in \R^{(n_{\text{red}} + n_{\text{syn}}) \times d},
+    \qquad
+    \tilde{y} = \begin{bmatrix} y_{\text{red}} \\ \hat{y}_{\text{syn}} \end{bmatrix}.
+\end{equation}
+
+
+\section{The Boosting Loop}
+
+\subsection{Initialisation}
+
+\begin{enumerate}[nosep]
+    \item Compute initial prediction:
+        \begin{itemize}[nosep]
+            \item \textbf{Regression}: $\hat{y}_0 = \bar{y}$ (mean of training targets).
+            \item \textbf{Classification}: $\hat{y}_0 = \log\frac{\bar{y}}{1 - \bar{y}}$ (log-odds).
+        \end{itemize}
+    \item Set all predictions: $\hat{y}_i^{(0)} = \hat{y}_0$ for all $i$.
+    \item Run initial HVRT fit on $(X, y)$ using raw targets as the $y$-signal.
+    \item Reduce and optionally expand, producing $(\tilde{X}^{(0)}, \tilde{y}^{(0)})$.
+    \item Set resampled predictions:
+        $\tilde{p}_i^{(0)} = \hat{y}_0$ for all $i \in \tilde{X}^{(0)}$.
+\end{enumerate}
+
+\subsection{Round-by-Round Gradient Descent}
+
+For round $t = 1, \dots, T$ (\texttt{n\_rounds}):
+
+\paragraph{Step 1: Compute gradients on the resampled set.}
+\begin{align}
+    g_i^{(t)} &= \tilde{y}_i^{(t-1)} - \tilde{p}_i^{(t-1)}
+    && \text{(regression, squared error)} \\
+    g_i^{(t)} &= \tilde{y}_i^{(t-1)} - \sigma(\tilde{p}_i^{(t-1)})
+    && \text{(classification, log-loss)}
+\end{align}
+where $\sigma(v) = 1/(1 + e^{-v})$ is the sigmoid function.
+
+\paragraph{Step 2: Fit a weak learner tree on the resampled data.}
+
+A decision tree $h_t$ is built on $(\tilde{X}^{(t-1)}, g^{(t)})$ using:
+\begin{itemize}[nosep]
+    \item Pre-computed bin edges from the \emph{full} dataset (64 bins).
+    \item Random split strategy (ExtraTrees-style): for each candidate feature,
+        the split threshold is drawn uniformly from the bin edges.
+    \item Variance-reduction splitting on the gradient values.
+    \item \texttt{max\_depth}, \texttt{min\_samples\_leaf} control tree complexity.
+\end{itemize}
+
+\paragraph{Step 3: Update predictions.}
+\begin{align}
+    \tilde{p}_i^{(t)} &= \tilde{p}_i^{(t-1)} + \eta \cdot h_t(\tilde{x}_i)
+    && \text{(resampled set)} \\
+    \hat{y}_i^{(t)} &= \hat{y}_i^{(t-1)} + \eta \cdot h_t(x_i)
+    && \text{(full training set)}
+\end{align}
+where $\eta$ is the \texttt{learning\_rate}.
+
+\begin{remark}[Dual prediction tracking]
+GeoXGB maintains \emph{two} prediction vectors:
+$\tilde{p}$ on the resampled set (used for gradient computation on the
+reduced+synthetic data) and $\hat{y}$ on the full training set (used for
+gradient computation at refit boundaries and for the final model output).
+Each tree is evaluated on both sets every round: $h_t(\tilde{X})$ and $h_t(X)$.
+This is $\mathcal{O}(n)$ per round, not $\mathcal{O}(n_{\text{red}})$.
+\end{remark}
+
+
+\section{Refits: Geometry Re-Survey}
+\label{sec:refit}
+
+Every \texttt{refit\_interval} rounds (e.g.\ every 50 rounds), the partition
+geometry is re-surveyed using the \emph{current gradient landscape}.  This is
+the critical mechanism that couples the static geometry to the evolving
+loss surface.
+
+\subsection{Refit Trigger}
+
+At round $t$ where $t \bmod R = 0$ (with $R = \texttt{refit\_interval}$):
+
+\begin{enumerate}[nosep]
+    \item Compute full-data gradients:
+        $g_i^{(\text{full})} = y_i - \hat{y}_i^{(t)}$ (regression) or
+        $g_i^{(\text{full})} = y_i - \sigma(\hat{y}_i^{(t)})$ (classification).
+    \item Pass $g^{(\text{full})}$ as the new $y$-signal to HVRT refit.
+\end{enumerate}
+
+\subsection{What Changes at Refit}
+
+The HVRT refit is a \emph{fast path} that reuses:
+\begin{itemize}[nosep]
+    \item The whitened matrix $Z$ (computed once at initial fit).
+    \item The binned feature matrix (computed once at initial fit).
+    \item The geometry target $T$ (computed once at initial fit).
+\end{itemize}
+
+What changes:
+\begin{enumerate}[nosep]
+    \item The $y$-signal in the blend is now the gradient vector
+        $g^{(\text{full})}$ instead of the raw targets $y$.
+    \item The blended target becomes:
+        \begin{equation}
+            t_{\text{blend}}^{(t)} = \zscore\!\bigl(
+                (1 - w_y^{(t)})\,T + w_y^{(t)}\,y_{\text{comp}}(g^{(\text{full})})
+            \bigr),
+        \end{equation}
+        where $y_{\text{comp}}(g) = \zscore(|g_{\text{norm}} - \med(g_{\text{norm}})|)$
+        measures gradient extremality.
+    \item The partition tree is rebuilt on $Z$ with the new blended target.
+    \item The expander (KDE parameters) is re-fitted if partitions changed.
+    \item Reduction and expansion produce a new $(\tilde{X}^{(t)}, \tilde{y}^{(t)})$.
+\end{enumerate}
+
+\subsection{Geometric Interpretation of Refit}
+
+\begin{definition}[Refit as gradient-geometry alignment]
+At round 0, the partition tree separates $z$-space along iso-$T$ level sets
+blended with raw-target extremality.  The tree knows which samples have high
+pairwise feature cooperation but knows nothing about which regions the
+boosted ensemble struggles with.
+
+At refit round $t$, the gradient $g^{(\text{full})}$ encodes exactly where
+the ensemble is wrong: large $|g_i|$ means sample $i$ is poorly predicted.
+The blended target $t_{\text{blend}}^{(t)}$ now separates $z$-space into
+regions that are both geometrically coherent \emph{and} where the ensemble
+has high residual error.
+
+This means:
+\begin{itemize}[nosep]
+    \item Partitions \emph{drift} toward hard-to-predict regions of $z$-space.
+    \item The reduced set preferentially retains samples with high residuals.
+    \item Synthetic samples are generated near geometrically interesting points
+        that the ensemble cannot yet fit.
+    \item As the ensemble improves, gradients shrink, $y_{\text{comp}}$ becomes
+        more uniform, and the partition tree reverts toward pure geometry.
+\end{itemize}
+\end{definition}
+
+\subsection{Adaptive Y-Weight}
+\label{sec:adaptive_yw}
+
+When \texttt{adaptive\_y\_weight} is enabled, the effective $y$-weight
+is scaled by the alignment between the geometry target and the current
+residuals:
+\begin{equation}
+    w_y^{(t)} = w_y \cdot |\rho(T, g^{(\text{full})})|,
+\end{equation}
+where $\rho$ is the Pearson correlation.  When the gradients are orthogonal
+to the geometry ($\rho \approx 0$), $w_y^{(t)} \to 0$ and the partition
+tree becomes pure geometry.  When the gradients are strongly aligned with
+the geometry ($|\rho| \approx 1$), the full $y$-weight is applied.
+
+\begin{remark}
+This prevents the gradient signal from corrupting the geometry when the
+residuals are pure noise (late in training when the ensemble has converged).
+It is the adaptive mechanism that allows GeoXGB to self-regulate the
+geometry--gradient coupling.
+\end{remark}
+
+
+\section{Noise Modulation}
+\label{sec:noise}
+
+\subsection{Signal-to-Noise Estimator}
+
+At each resample event, GeoXGB estimates the local signal-to-noise ratio
+$\hat{\nu} \in [0, 1]$:
+
+\begin{enumerate}[nosep]
+    \item Subsample $m = \min(500, n)$ probe points.
+    \item For each probe $i$, find its $k$-nearest neighbours in $z$-space
+        ($k = \min(10, n/30)$) and compute the local mean
+        $\bar{y}_i^{(\text{local})} = \frac{1}{k}\sum_{j \in \text{kNN}(i)} y_j$.
+    \item Compute local-mean variance $\sigma_{\text{local}}^2 = \Var(\bar{y}^{(\text{local})})$
+        and total $y$-variance $\sigma_y^2 = \Var(y)$.
+    \item SNR ratio: $\text{snr} = \sigma_{\text{local}}^2 / \sigma_y^2$.
+    \item $\hat{\nu} = \text{clamp}\!\bigl(\frac{\text{snr} - 0.15}{0.45},\; 0,\; 1\bigr)$.
+\end{enumerate}
+
+\begin{remark}
+$\hat{\nu} = 1$ means pure signal (local averages explain all $y$-variance).
+$\hat{\nu} = 0$ means pure noise (local averages are constant --- $y$ has
+no spatial structure in $z$-space).
+\end{remark}
+
+\subsection{How Noise Modulation Affects the Loop}
+
+\begin{itemize}[nosep]
+    \item \textbf{Reduce ratio}: $r_{\text{eff}} = r + (1 - \hat{\nu})(1 - r)$.
+        Noisier data $\to$ keep more samples (less aggressive reduction).
+    \item \textbf{Expand count}: $n_{\text{syn}} = \lfloor n \cdot e \cdot \hat{\nu} \rfloor$.
+        Noisier data $\to$ generate fewer synthetic samples.
+    \item \textbf{Noise guard}: when $\hat{\nu} < 0.05$ and $n < \texttt{min\_train\_samples}$,
+        skip the refit entirely (the gradient is too noisy to guide the geometry).
+\end{itemize}
+
+
+\section{Block Cycling (Large-$n$ Scalability)}
+
+When $n > n_{\text{block}}$ (auto-determined or user-specified), the full
+training set is divided into non-overlapping blocks of size $n_{\text{block}}$.
+
+\begin{itemize}[nosep]
+    \item A deterministic LCG-based permutation shuffles sample indices.
+    \item At each refit boundary, the boosting loop advances to the next block.
+    \item When all blocks are exhausted, a new epoch begins with a fresh
+        permutation.
+    \item Each block gets a \emph{fresh} HVRT fit (whitening, geometry target,
+        partition tree) since different blocks cover different geometric regions.
+\end{itemize}
+
+\begin{equation}
+    n_{\text{block}} = \max\!\bigl(2000,\; \lfloor\sqrt{n} \cdot 15 \cdot \text{ri\_scale}\rfloor\bigr),
+    \qquad
+    \text{ri\_scale} = \text{clamp}\!\Bigl(\frac{R}{50},\; 0.5,\; 2.0\Bigr).
+\end{equation}
+
+\begin{remark}
+Block cycling makes all per-round costs $\mathcal{O}(n_{\text{block}})$
+instead of $\mathcal{O}(n)$.  The $\sqrt{n}$ scaling ensures blocks grow
+sub-linearly: at $n = 100{,}000$ with $R = 50$, $n_{\text{block}} \approx 4{,}743$.
+\end{remark}
+
+
+\section{Complete Algorithm}
+
+\begin{algorithm}[H]
+\caption{GeoXGB Fit (Regression, Squared Error)}
+\begin{algorithmic}[1]
+\REQUIRE $X \in \R^{n \times d}$, $y \in \R^n$, hyperparameters $\eta, R, r, e, w_y, T_{\max}$
+\STATE $\hat{y}_0 \gets \bar{y}$; \quad $\hat{\bm{y}} \gets \hat{y}_0 \cdot \bm{1}_n$
+\STATE Compute whitener: $Z \gets \text{whiten}(X)$
+\STATE Compute geometry target: $T \gets \text{pairwise\_target}(Z)$
+\STATE $t_{\text{blend}} \gets \zscore\bigl((1-w_y) T + w_y\, y_{\text{comp}}(y)\bigr)$
+\STATE Build partition tree on $(Z, t_{\text{blend}})$ $\to$ partitions $\{\mathcal{P}_p\}$
+\STATE Fit KDE expander per partition
+\STATE Reduce: $\mathcal{R} \gets \text{variance\_ordered}(\{\mathcal{P}_p\}, \lfloor n r \rfloor)$
+\STATE Expand: $\mathcal{S} \gets \text{KDE\_sample}(\lfloor n e \rfloor)$; \quad $\hat{y}_{\text{syn}} \gets \text{kNN}_{k=3}(Z_\mathcal{S}, Z_\mathcal{R}, y_\mathcal{R})$
+\STATE $\tilde{X} \gets [X_\mathcal{R}; X_\mathcal{S}]$; \quad $\tilde{y} \gets [y_\mathcal{R}; \hat{y}_{\text{syn}}]$
+\STATE $\tilde{\bm{p}} \gets \hat{y}_0 \cdot \bm{1}_{|\tilde{X}|}$
+\FOR{$t = 1$ \textbf{to} $T_{\max}$}
+    \IF{$t > 0$ and $t \bmod R = 0$}
+        \STATE $g^{(\text{full})} \gets y - \hat{\bm{y}}$ \hfill\COMMENT{Full-data gradients}
+        \STATE $w_y^{(t)} \gets w_y \cdot |\rho(T, g^{(\text{full})})|$ \hfill\COMMENT{Adaptive y-weight}
+        \STATE $t_{\text{blend}}^{(t)} \gets \zscore\bigl((1-w_y^{(t)}) T + w_y^{(t)}\, y_{\text{comp}}(g^{(\text{full})})\bigr)$
+        \STATE Rebuild partition tree on $(Z, t_{\text{blend}}^{(t)})$ \hfill\COMMENT{Refit: same $Z$, $T$; new blend}
+        \STATE Re-fit KDE if partitions changed
+        \STATE Re-reduce, re-expand $\to$ new $(\tilde{X}, \tilde{y})$
+        \STATE Sync $\tilde{\bm{p}}$ from $\hat{\bm{y}}$ for real samples, $\text{predict}(\tilde{X}_{\text{syn}})$ for synthetic
+        \STATE $\tilde{y}_{\text{real}} \gets \tilde{\bm{p}}_{\text{real}} + g^{(\text{full})}_\mathcal{R}$ \hfill\COMMENT{Reconstruct targets}
+    \ENDIF
+    \STATE $g \gets \tilde{y} - \tilde{\bm{p}}$ \hfill\COMMENT{Gradients on resampled set}
+    \STATE Fit tree $h_t$ on $(\tilde{X}, g)$ with random splits, depth=$D$
+    \STATE $\tilde{\bm{p}} \gets \tilde{\bm{p}} + \eta \cdot h_t(\tilde{X})$
+    \STATE $\hat{\bm{y}} \gets \hat{\bm{y}} + \eta \cdot h_t(X)$
+\ENDFOR
+\STATE $F(x) = \hat{y}_0 + \eta \sum_{t=1}^{T_{\max}} h_t(x)$ \hfill\COMMENT{Ensemble prediction}
+\end{algorithmic}
+\end{algorithm}
+
+
+\section{Geometric Evolution Across $n$}
+
+\subsection{Small $n$ ($n \lesssim 500$)}
+
+\begin{itemize}[nosep]
+    \item Few partitions (10--50).  Each partition covers a broad region of $z$-space.
+    \item Variance-ordered reduction retains most samples (at $r = 0.7$, keeping 350 of 500).
+    \item Synthetic expansion fills gaps: with $e = 0.1$, generates $\sim$50 synthetic points.
+    \item The kNN $y$-assignment uses the full reduced set as reference --- accurate because
+        partition interiors are well-sampled.
+    \item Refits shift partitions significantly: $g^{(\text{full})}$ on 500 points is noisy,
+        so the blended target changes substantially each refit.
+    \item Net effect: the geometry acts as a \emph{regulariser} --- the partition structure
+        prevents the boosted trees from overfitting to individual noisy samples.
+\end{itemize}
+
+\subsection{Moderate $n$ ($n \sim 1{,}000\text{--}10{,}000$)}
+
+\begin{itemize}[nosep]
+    \item More partitions (50--500).  Finer geometry captures local feature interactions.
+    \item Reduction is meaningful: at $r = 0.7$, discarding 30\% of 5{,}000 = 1{,}500
+        uninformative interior points.  The reduced set of 3{,}500 preserves the geometric
+        skeleton.
+    \item Synthetic samples concentrate where the KDE has high density --- near partition
+        centroids.  These provide ``consensus'' targets that smooth the gradient signal.
+    \item Refits are stable: $g^{(\text{full})}$ on 5{,}000+ points has low variance,
+        so partition drift is gradual and predictable.
+    \item This is the regime where GeoXGB outperforms XGBoost most consistently:
+        the geometry captures feature-interaction structure that pure tree splitting
+        must discover through many sequential splits.
+\end{itemize}
+
+\subsection{Large $n$ ($n \gtrsim 20{,}000$)}
+
+\begin{itemize}[nosep]
+    \item Block cycling activates: each refit sees a different $n_{\text{block}}$-sized
+        slice of the data.
+    \item Each block gets a \emph{fresh} whitener and geometry target.  The partitions
+        are block-local, not global.
+    \item The ensemble sees different geometric views at each refit, providing
+        implicit regularisation through geometric diversity.
+    \item At $n = 100{,}000$, $n_{\text{block}} \approx 4{,}700$.  Over $T = 1{,}000$ rounds
+        with $R = 50$, the ensemble trains on $\sim$20 blocks $\times$ 3{,}300 reduced
+        samples = 66{,}000 unique samples --- progressive coverage of the full dataset.
+    \item Prediction cost is $\mathcal{O}(n_{\text{block}})$ per round instead of
+        $\mathcal{O}(n)$, making the total fit cost $\mathcal{O}(T \cdot n_{\text{block}} \cdot d)$.
+\end{itemize}
+
+\subsection{Summary: What Each Component Does}
+
+\begin{center}
+\begin{tabular}{lll}
+\hline
+\textbf{Component} & \textbf{Mathematical Role} & \textbf{Effect on Learning} \\
+\hline
+Whitening & $z = (x - \mu)/\sigma$ & Isotropic feature space \\
+Geometry target $T$ & $e_2(z)$ level sets & Feature-interaction structure \\
+Y-weight blend & $(1-w)T + w\,|y - \med(y)|$ & Gradient--geometry coupling \\
+Partition tree & Variance-reduction splits on $t_{\text{blend}}$ & Spatial decomposition \\
+Reduction & Retain high-variance boundary points & Remove redundant interior \\
+Expansion & Per-partition KDE sampling & Smooth gradient signal \\
+kNN $y$-assign & IDW interpolation in $z$-space & Consistent synthetic targets \\
+Refit & New blend with current gradients & Track evolving loss surface \\
+Adaptive $w_y$ & $w_y \cdot |\rho(T, g)|$ & Self-regulate coupling \\
+Noise modulation & Local SNR estimate & Gate expansion/reduction \\
+Block cycling & Rotate $n_{\text{block}}$-sized slices & Scalable geometric diversity \\
+\hline
+\end{tabular}
+\end{center}
+
+
+\end{document}

@@ -100,6 +100,24 @@ Eigen::VectorXd blend_target(const Eigen::VectorXd& x_comp,
     return zscore(blended);
 }
 
+Eigen::VectorXd compute_e3_target(const Eigen::MatrixXd& X_z) {
+    // e₃ via Newton's identity: e₃ = (S³ + 2·p₃ − 3·Q·S) / 6
+    // where S = Σzᵢ, Q = Σzᵢ², p₃ = Σzᵢ³  (all per-sample sums over features)
+    // O(n·d) — no pair loops needed.
+    const int n = static_cast<int>(X_z.rows());
+
+    Eigen::VectorXd S  = X_z.rowwise().sum();                          // Σzᵢ
+    Eigen::VectorXd Q  = X_z.rowwise().squaredNorm();                  // Σzᵢ²
+    Eigen::VectorXd p3 = X_z.array().cube().matrix().rowwise().sum();  // Σzᵢ³
+
+    Eigen::VectorXd e3(n);
+    for (int i = 0; i < n; ++i) {
+        e3[i] = (S[i]*S[i]*S[i] + 2.0*p3[i] - 3.0*Q[i]*S[i]) / 6.0;
+    }
+
+    return zscore(e3);
+}
+
 Eigen::VectorXd compute_selective_target(const Eigen::MatrixXd& X_z,
                                           const Eigen::VectorXd& resid,
                                           int k_pairs) {

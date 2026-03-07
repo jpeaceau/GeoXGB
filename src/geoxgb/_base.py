@@ -51,6 +51,9 @@ class _GeoXGBBase:
         "refit_noise_floor", "noise_guard", "hvrt_params", "hvrt_tree_splitter",
         "hvrt_auto_reduce_threshold", "partitioner", "adaptive_reduce_ratio",
         "loss", "sample_block_n", "leave_last_block_out",
+        "n_bins", "fast_refit", "max_resample_n",
+        "colsample_bytree", "goss_alpha", "goss_beta", "predict_stride",
+        "grad_budget_weight",
     )
 
     _is_classifier = False
@@ -93,6 +96,14 @@ class _GeoXGBBase:
         adaptive_reduce_ratio=False,
         sample_block_n='auto',
         leave_last_block_out=False,
+        n_bins=64,
+        fast_refit=False,
+        max_resample_n=None,
+        colsample_bytree=1.0,
+        goss_alpha=0.0,
+        goss_beta=0.0,
+        predict_stride=1,
+        grad_budget_weight=0.0,
     ):
         self.n_rounds = n_rounds
         self.learning_rate = learning_rate
@@ -130,6 +141,14 @@ class _GeoXGBBase:
         self.adaptive_reduce_ratio = adaptive_reduce_ratio
         self.sample_block_n = sample_block_n
         self.leave_last_block_out = leave_last_block_out
+        self.n_bins = n_bins
+        self.fast_refit = fast_refit
+        self.max_resample_n = max_resample_n
+        self.colsample_bytree = colsample_bytree
+        self.goss_alpha = goss_alpha
+        self.goss_beta = goss_beta
+        self.predict_stride = predict_stride
+        self.grad_budget_weight = grad_budget_weight
 
         # Fitted state
         self._is_fitted = False

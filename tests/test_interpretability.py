@@ -239,7 +239,7 @@ def test_cooperation_tensor_symmetry():
 # ---------------------------------------------------------------------------
 
 # Deterministic synthetic dataset: y = 2*x1 + 3*x2 - x3 + 0.5*x1*x2 - 1.5*x2*x3
-_VALS = [0.0, 0.5, 1.0, 1.5, 2.0]
+_VALS = np.linspace(0.0, 2.0, 8)
 _X_SYNTH = np.array([(x1, x2, x3) for x1 in _VALS for x2 in _VALS for x3 in _VALS],
                     dtype=np.float64)
 _Y_SYNTH  = (2.0 * _X_SYNTH[:, 0] + 3.0 * _X_SYNTH[:, 1] - 1.0 * _X_SYNTH[:, 2]

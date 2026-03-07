@@ -110,13 +110,15 @@ class GeoXGBOptimizer:
     # trial 0 is guaranteed to be at least as good as the out-of-box model.
     #
     # Search space covers the empirically-validated ranges from 2 000+
-    # Optuna TPE trials across diabetes and Friedman-1 benchmarks:
-    #   - learning_rate: log-spaced 0.005–0.05 (optimal 0.010–0.020)
-    #   - max_depth: 2–5 (depth 2 is empirical rank-1 on diabetes)
+    # Optuna TPE trials across diabetes, Friedman-1, California Housing,
+    # and Kaggle churn benchmarks:
+    #   - learning_rate: log-spaced 0.003–0.1 (wide range for diverse datasets)
+    #   - max_depth: 2–7 (deeper trees help high-d and large-n)
     #   - reduce_ratio: 0.3–0.95 (large dataset-dependent variation)
-    #   - refit_interval: 10–200 (diabetes optimal = 200, Friedman-1 = 10)
-    #   - expand_ratio: 0.0–0.3 (secondary; most impactful on small n)
-    #   - y_weight: 0.1–0.5 (Optuna consistently finds 0.21–0.28 optimal)
+    #   - refit_interval: 10–500 (diabetes optimal=200, Friedman-1=10)
+    #   - expand_ratio: 0.0–0.5 (secondary; most impactful on small n)
+    #   - y_weight: 0.1–0.8 (classifier benefits from higher values)
+    #   - hvrt_min_samples_leaf: controls partition granularity
     # ------------------------------------------------------------------
 
     _DEFAULTS_REGRESSION = {
@@ -127,16 +129,18 @@ class GeoXGBOptimizer:
         "refit_interval": 50,
         "expand_ratio":   0.1,
         "y_weight":       0.25,
+        "hvrt_min_samples_leaf": None,
     }
 
     _SEARCH_SPACE_REGRESSION = {
-        "n_rounds":       [500, 1000, 1500, 2000, 3000],
-        "learning_rate":  [0.005, 0.008, 0.01, 0.015, 0.02, 0.03, 0.05],
-        "max_depth":      [2, 3, 4, 5],
-        "reduce_ratio":   [0.3, 0.5, 0.6, 0.7, 0.8, 0.9, 0.95],
-        "refit_interval": [10, 20, 50, 100, 200],
-        "expand_ratio":   [0.0, 0.05, 0.1, 0.2, 0.3],
+        "n_rounds":       [500, 1000, 1500, 2000, 3000, 4000],
+        "learning_rate":  [0.003, 0.005, 0.008, 0.01, 0.015, 0.02, 0.03, 0.05, 0.08, 0.1],
+        "max_depth":      [2, 3, 4, 5, 6, 7],
+        "reduce_ratio":   [0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 0.95],
+        "refit_interval": [10, 20, 50, 100, 200, 300, 500],
+        "expand_ratio":   [0.0, 0.05, 0.1, 0.2, 0.3, 0.4, 0.5],
         "y_weight":       [0.1, 0.15, 0.2, 0.25, 0.3, 0.4, 0.5],
+        "hvrt_min_samples_leaf": [None, 5, 10, 20, 30],
     }
 
     # ------------------------------------------------------------------
@@ -153,23 +157,30 @@ class GeoXGBOptimizer:
         "expand_ratio":   0.1,
         "y_weight":       0.25,
         "class_weight":   None,
+        "hvrt_min_samples_leaf": None,
     }
 
     _SEARCH_SPACE_CLASSIFICATION = {
-        "n_rounds":       [500, 1000, 1500, 2000, 3000],
-        "learning_rate":  [0.005, 0.008, 0.01, 0.015, 0.02, 0.03, 0.05],
-        "max_depth":      [2, 3, 4, 5, 6],
-        "reduce_ratio":   [0.3, 0.5, 0.6, 0.7, 0.8, 0.9, 0.95],
-        "refit_interval": [10, 20, 50, 100, 200],
-        "expand_ratio":   [0.0, 0.05, 0.1, 0.2, 0.3],
-        "y_weight":       [0.1, 0.15, 0.2, 0.25, 0.3, 0.4, 0.5, 0.6],
+        "n_rounds":       [500, 1000, 1500, 2000, 3000, 4000],
+        "learning_rate":  [0.003, 0.005, 0.008, 0.01, 0.015, 0.02, 0.03, 0.05, 0.08, 0.1],
+        "max_depth":      [2, 3, 4, 5, 6, 7],
+        "reduce_ratio":   [0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 0.95],
+        "refit_interval": [10, 20, 50, 100, 200, 300, 500],
+        "expand_ratio":   [0.0, 0.05, 0.1, 0.2, 0.3, 0.4, 0.5],
+        "y_weight":       [0.1, 0.15, 0.2, 0.25, 0.3, 0.4, 0.5, 0.6, 0.8],
         "class_weight":   [None, "balanced"],
+        "hvrt_min_samples_leaf": [None, 5, 10, 20, 30],
     }
 
-    # convergence_tol applied to every trial to enable early stopping
+    # Applied to every trial: convergence_tol enables early stopping.
     _TRIAL_DEFAULTS = {
         "convergence_tol": 0.01,
     }
+
+    # Maximum samples used for HPO CV evaluation.  Datasets larger than
+    # this are subsampled (stratified for classification) to keep each
+    # trial fast.  The best params are then refit on the full dataset.
+    _MAX_HPO_SAMPLES = 10_000
 
     def __init__(
         self,
@@ -225,10 +236,26 @@ class GeoXGBOptimizer:
             defaults     = dict(self._DEFAULTS_REGRESSION)
             search_space = dict(self._SEARCH_SPACE_REGRESSION)
 
+        # Subsample to _MAX_HPO_SAMPLES for speed.  Stratified for
+        # classification to preserve class distribution.
+        n_samples = len(X)
+        X_full, y_full = X, y  # keep originals for final refit
+        if n_samples > self._MAX_HPO_SAMPLES:
+            rng = np.random.RandomState(self.random_state)
+            if task == "classification":
+                from sklearn.model_selection import train_test_split
+                X, _, y, _ = train_test_split(
+                    X, y, train_size=self._MAX_HPO_SAMPLES,
+                    stratify=y, random_state=self.random_state,
+                )
+            else:
+                idx = rng.choice(n_samples, self._MAX_HPO_SAMPLES, replace=False)
+                X, y = X[idx], y[idx]
+            n_samples = len(X)
+
         # Always enable block cycling at n >= 5000.  sample_block_n='auto'
         # is injected as a fixed param so every single trial uses it —
         # running on the full dataset is never an option above this threshold.
-        n_samples = len(X)
         if n_samples >= 5_000 and 'sample_block_n' not in fixed_params:
             fixed_params = {**fixed_params, 'sample_block_n': 'auto'}
 
@@ -290,7 +317,7 @@ class GeoXGBOptimizer:
         self.best_params_ = dict(study.best_params)
         self.best_score_  = float(study.best_value)
 
-        # Refit best config on full training data
+        # Refit best config on full training data (not the HPO subsample)
         best_run = {
             **self.best_params_,
             "random_state": self.random_state,
@@ -299,7 +326,7 @@ class GeoXGBOptimizer:
         self.best_model_ = model_cls(**best_run)
         with warnings.catch_warnings():
             warnings.simplefilter("ignore")
-            self.best_model_.fit(X, y)
+            self.best_model_.fit(X_full, y_full)
 
         return self
 

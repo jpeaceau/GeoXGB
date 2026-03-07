@@ -69,6 +69,12 @@ public:
     // Aggregate impurity-based feature importance across all GBT weak learners.
     std::vector<double> feature_importances() const;
 
+    // Serialization: export/import full model state as binary blob.
+    // Restores prediction capability and geometry state (X_z, partition_ids,
+    // train_predictions).  Does NOT restore HVRT state (to_z/apply will throw).
+    std::vector<uint8_t> to_bytes() const;
+    void from_bytes(const std::vector<uint8_t>& data);
+
 protected:
     // Called by subclass fit(); handles the full boosting + resampling loop.
     void fit_boosting(
@@ -153,6 +159,13 @@ private:
     // Bin edges extracted from full_binner_ after fit; injected into each GBT
     // weak learner before build() to skip per-round O(n·d·log n) re-sort.
     std::vector<Eigen::VectorXd>         gbt_bin_edges_;
+
+    // Predict stride: count of trees whose full-dataset predict is deferred
+    int pending_trees_for_preds_ = 0;
+
+    // Gradient amplification: per-partition power-scaled weight cache.
+    // Recomputed at each refit boundary, reused between refits.
+    std::vector<double> grad_amp_weights_;
 };
 
 } // namespace geoxgb

@@ -43,6 +43,392 @@ def _fit_class_worker(k, X, y_enc, params):
 # Classifier class
 # ---------------------------------------------------------------------------
 
+class GeoXGBGiniClassifier(_GeoXGBBase):
+    """
+    Geometry-aware gradient boosting classifier using Gini-impurity loss.
+
+    Uses Gini-weighted pseudo-residuals instead of log-loss gradients:
+        g_i = (y_i - p_i) * |1 - 2*p_i|
+
+    Compared to log-loss (GeoXGBClassifier):
+    - Bounded gradient magnitudes (no log-divergence near 0 or 1)
+    - Smoother loss surface near the decision boundary
+    - May be more robust to label noise
+
+    Only supports binary classification. For multiclass, use GeoXGBClassifier.
+
+    Parameters
+    ----------
+    class_weight : None | 'balanced' | dict, optional
+        Class weight scheme applied to gradient updates.
+    All other parameters inherited from _GeoXGBBase.
+    """
+
+    _is_classifier = True
+
+    def __init__(self, **kwargs):
+        self.class_weight = kwargs.pop("class_weight", None)
+        super().__init__(**kwargs)
+        self._class_weights = None
+        self._classes = None
+        self._label_encoder = None
+        self._n_classes = None
+
+    def fit(self, X, y, feature_types=None):
+        X = np.asarray(X, dtype=np.float64)
+        y_raw = np.asarray(y).ravel()
+        self._feature_types = feature_types
+        self._n_features = X.shape[1]
+        X = self._encode_features(X, feature_types, fitting=True)
+
+        self._label_encoder = LabelEncoder()
+        y_enc = self._label_encoder.fit_transform(y_raw)
+        self._classes = self._label_encoder.classes_
+        self._n_classes = len(self._classes)
+
+        if self._n_classes != 2:
+            raise ValueError("GeoXGBGiniClassifier only supports binary classification.")
+
+        n_s, n_c = len(y_enc), self._n_classes
+        if self.class_weight == "balanced":
+            counts = np.bincount(y_enc, minlength=n_c).astype(float)
+            self._class_weights = n_s / (n_c * counts)
+        elif isinstance(self.class_weight, dict):
+            cls_list = list(self._label_encoder.classes_)
+            self._class_weights = np.array(
+                [self.class_weight.get(cls_list[k], 1.0) for k in range(n_c)],
+                dtype=float,
+            )
+        else:
+            self._class_weights = None
+
+        self._fit_binary(X, y_enc.astype(np.float64))
+        self._X_train = X
+        self._is_fitted = True
+        return self
+
+    def _fit_binary(self, X, y):
+        from geoxgb._cpp_backend import make_cpp_config
+        from geoxgb._cpp_backend import CppGeoXGBGiniClassifier as _CppGini
+
+        params = {k: getattr(self, k) for k in self._PARAM_NAMES if hasattr(self, k)}
+        if params.get('sample_block_n') == 'auto':
+            params['sample_block_n'] = _resolve_auto_block(
+                len(X), self.refit_interval, self.n_rounds,
+            )
+        if self._class_weights is not None:
+            params['pos_class_weight'] = float(self._class_weights[1])
+        self._cpp_model = _CppGini(make_cpp_config(**params))
+        self._cpp_model.fit(X, y)
+        cr = self._cpp_model.convergence_round()
+        self.convergence_round_ = None if cr < 0 else cr
+
+    def predict(self, X):
+        self._check_fitted()
+        proba = self.predict_proba(X)
+        indices = np.argmax(proba, axis=1)
+        return self._label_encoder.inverse_transform(indices)
+
+    def predict_proba(self, X):
+        self._check_fitted()
+        X = self._encode_features(np.asarray(X, dtype=np.float64), self._feature_types)
+        return self._cpp_model.predict_proba(X)
+
+    @property
+    def n_trees(self):
+        cpp = getattr(self, '_cpp_model', None)
+        if cpp is not None:
+            cr = self.convergence_round_
+            return cr if cr is not None else self.n_rounds
+        return 0
+
+
+class GeoXGBFocalClassifier(_GeoXGBBase):
+    """
+    Geometry-aware gradient boosting classifier using Focal Loss.
+
+    Focal loss (Lin et al., 2017): L = -(1-p_t)^gamma * log(p_t)
+    where p_t is the probability assigned to the true class.
+
+    gamma=0 recovers standard log-loss. gamma>0 downweights easy examples
+    and focuses learning on hard, misclassified examples near the boundary.
+
+    Only supports binary classification.
+
+    Parameters
+    ----------
+    gamma : float, default=2.0
+        Focusing parameter. Higher values = more focus on hard examples.
+    class_weight : None | 'balanced' | dict, optional
+    """
+
+    _is_classifier = True
+
+    def __init__(self, gamma=2.0, **kwargs):
+        self.class_weight = kwargs.pop("class_weight", None)
+        self.gamma = gamma
+        super().__init__(**kwargs)
+        self._class_weights = None
+        self._classes = None
+        self._label_encoder = None
+        self._n_classes = None
+
+    def fit(self, X, y, feature_types=None):
+        X = np.asarray(X, dtype=np.float64)
+        y_raw = np.asarray(y).ravel()
+        self._feature_types = feature_types
+        self._n_features = X.shape[1]
+        X = self._encode_features(X, feature_types, fitting=True)
+
+        self._label_encoder = LabelEncoder()
+        y_enc = self._label_encoder.fit_transform(y_raw)
+        self._classes = self._label_encoder.classes_
+        self._n_classes = len(self._classes)
+
+        if self._n_classes != 2:
+            raise ValueError("GeoXGBFocalClassifier only supports binary classification.")
+
+        n_s, n_c = len(y_enc), self._n_classes
+        if self.class_weight == "balanced":
+            counts = np.bincount(y_enc, minlength=n_c).astype(float)
+            self._class_weights = n_s / (n_c * counts)
+        elif isinstance(self.class_weight, dict):
+            cls_list = list(self._label_encoder.classes_)
+            self._class_weights = np.array(
+                [self.class_weight.get(cls_list[k], 1.0) for k in range(n_c)],
+                dtype=float,
+            )
+        else:
+            self._class_weights = None
+
+        self._fit_binary(X, y_enc.astype(np.float64))
+        self._X_train = X
+        self._is_fitted = True
+        return self
+
+    def _fit_binary(self, X, y):
+        from geoxgb._cpp_backend import make_cpp_config
+        from geoxgb._cpp_backend import CppGeoXGBFocalClassifier as _CppFocal
+
+        params = {k: getattr(self, k) for k in self._PARAM_NAMES if hasattr(self, k)}
+        if params.get('sample_block_n') == 'auto':
+            params['sample_block_n'] = _resolve_auto_block(
+                len(X), self.refit_interval, self.n_rounds,
+            )
+        if self._class_weights is not None:
+            params['pos_class_weight'] = float(self._class_weights[1])
+        self._cpp_model = _CppFocal(make_cpp_config(**params), self.gamma)
+        self._cpp_model.fit(X, y)
+        cr = self._cpp_model.convergence_round()
+        self.convergence_round_ = None if cr < 0 else cr
+
+    def predict(self, X):
+        self._check_fitted()
+        proba = self.predict_proba(X)
+        indices = np.argmax(proba, axis=1)
+        return self._label_encoder.inverse_transform(indices)
+
+    def predict_proba(self, X):
+        self._check_fitted()
+        X = self._encode_features(np.asarray(X, dtype=np.float64), self._feature_types)
+        return self._cpp_model.predict_proba(X)
+
+    @property
+    def n_trees(self):
+        cpp = getattr(self, '_cpp_model', None)
+        if cpp is not None:
+            cr = self.convergence_round_
+            return cr if cr is not None else self.n_rounds
+        return 0
+
+
+class GeoXGBExpClassifier(_GeoXGBBase):
+    """
+    Geometry-aware gradient boosting classifier using Exponential Loss (AdaBoost).
+
+    Exponential loss: L = exp(-y_signed * F) where y_signed in {-1, +1}.
+    Exponentially penalizes misclassified samples. More aggressive than log-loss.
+
+    Only supports binary classification.
+
+    Parameters
+    ----------
+    class_weight : None | 'balanced' | dict, optional
+    """
+
+    _is_classifier = True
+
+    def __init__(self, **kwargs):
+        self.class_weight = kwargs.pop("class_weight", None)
+        super().__init__(**kwargs)
+        self._class_weights = None
+        self._classes = None
+        self._label_encoder = None
+        self._n_classes = None
+
+    def fit(self, X, y, feature_types=None):
+        X = np.asarray(X, dtype=np.float64)
+        y_raw = np.asarray(y).ravel()
+        self._feature_types = feature_types
+        self._n_features = X.shape[1]
+        X = self._encode_features(X, feature_types, fitting=True)
+
+        self._label_encoder = LabelEncoder()
+        y_enc = self._label_encoder.fit_transform(y_raw)
+        self._classes = self._label_encoder.classes_
+        self._n_classes = len(self._classes)
+
+        if self._n_classes != 2:
+            raise ValueError("GeoXGBExpClassifier only supports binary classification.")
+
+        n_s, n_c = len(y_enc), self._n_classes
+        if self.class_weight == "balanced":
+            counts = np.bincount(y_enc, minlength=n_c).astype(float)
+            self._class_weights = n_s / (n_c * counts)
+        elif isinstance(self.class_weight, dict):
+            cls_list = list(self._label_encoder.classes_)
+            self._class_weights = np.array(
+                [self.class_weight.get(cls_list[k], 1.0) for k in range(n_c)],
+                dtype=float,
+            )
+        else:
+            self._class_weights = None
+
+        self._fit_binary(X, y_enc.astype(np.float64))
+        self._X_train = X
+        self._is_fitted = True
+        return self
+
+    def _fit_binary(self, X, y):
+        from geoxgb._cpp_backend import make_cpp_config
+        from geoxgb._cpp_backend import CppGeoXGBExpClassifier as _CppExp
+
+        params = {k: getattr(self, k) for k in self._PARAM_NAMES if hasattr(self, k)}
+        if params.get('sample_block_n') == 'auto':
+            params['sample_block_n'] = _resolve_auto_block(
+                len(X), self.refit_interval, self.n_rounds,
+            )
+        if self._class_weights is not None:
+            params['pos_class_weight'] = float(self._class_weights[1])
+        self._cpp_model = _CppExp(make_cpp_config(**params))
+        self._cpp_model.fit(X, y)
+        cr = self._cpp_model.convergence_round()
+        self.convergence_round_ = None if cr < 0 else cr
+
+    def predict(self, X):
+        self._check_fitted()
+        proba = self.predict_proba(X)
+        indices = np.argmax(proba, axis=1)
+        return self._label_encoder.inverse_transform(indices)
+
+    def predict_proba(self, X):
+        self._check_fitted()
+        X = self._encode_features(np.asarray(X, dtype=np.float64), self._feature_types)
+        return self._cpp_model.predict_proba(X)
+
+    @property
+    def n_trees(self):
+        cpp = getattr(self, '_cpp_model', None)
+        if cpp is not None:
+            cr = self.convergence_round_
+            return cr if cr is not None else self.n_rounds
+        return 0
+
+
+class GeoXGBHingeClassifier(_GeoXGBBase):
+    """
+    Geometry-aware gradient boosting classifier using Squared Hinge Loss.
+
+    Squared hinge loss: L = max(0, 1 - y_signed * F)^2.
+    Margin-based: once correctly classified with margin >= 1, zero gradient.
+    Bounded gradient magnitude. Geometrically interpretable as margin maximization.
+
+    Only supports binary classification.
+
+    Parameters
+    ----------
+    class_weight : None | 'balanced' | dict, optional
+    """
+
+    _is_classifier = True
+
+    def __init__(self, **kwargs):
+        self.class_weight = kwargs.pop("class_weight", None)
+        super().__init__(**kwargs)
+        self._class_weights = None
+        self._classes = None
+        self._label_encoder = None
+        self._n_classes = None
+
+    def fit(self, X, y, feature_types=None):
+        X = np.asarray(X, dtype=np.float64)
+        y_raw = np.asarray(y).ravel()
+        self._feature_types = feature_types
+        self._n_features = X.shape[1]
+        X = self._encode_features(X, feature_types, fitting=True)
+
+        self._label_encoder = LabelEncoder()
+        y_enc = self._label_encoder.fit_transform(y_raw)
+        self._classes = self._label_encoder.classes_
+        self._n_classes = len(self._classes)
+
+        if self._n_classes != 2:
+            raise ValueError("GeoXGBHingeClassifier only supports binary classification.")
+
+        n_s, n_c = len(y_enc), self._n_classes
+        if self.class_weight == "balanced":
+            counts = np.bincount(y_enc, minlength=n_c).astype(float)
+            self._class_weights = n_s / (n_c * counts)
+        elif isinstance(self.class_weight, dict):
+            cls_list = list(self._label_encoder.classes_)
+            self._class_weights = np.array(
+                [self.class_weight.get(cls_list[k], 1.0) for k in range(n_c)],
+                dtype=float,
+            )
+        else:
+            self._class_weights = None
+
+        self._fit_binary(X, y_enc.astype(np.float64))
+        self._X_train = X
+        self._is_fitted = True
+        return self
+
+    def _fit_binary(self, X, y):
+        from geoxgb._cpp_backend import make_cpp_config
+        from geoxgb._cpp_backend import CppGeoXGBHingeClassifier as _CppHinge
+
+        params = {k: getattr(self, k) for k in self._PARAM_NAMES if hasattr(self, k)}
+        if params.get('sample_block_n') == 'auto':
+            params['sample_block_n'] = _resolve_auto_block(
+                len(X), self.refit_interval, self.n_rounds,
+            )
+        if self._class_weights is not None:
+            params['pos_class_weight'] = float(self._class_weights[1])
+        self._cpp_model = _CppHinge(make_cpp_config(**params))
+        self._cpp_model.fit(X, y)
+        cr = self._cpp_model.convergence_round()
+        self.convergence_round_ = None if cr < 0 else cr
+
+    def predict(self, X):
+        self._check_fitted()
+        proba = self.predict_proba(X)
+        indices = np.argmax(proba, axis=1)
+        return self._label_encoder.inverse_transform(indices)
+
+    def predict_proba(self, X):
+        self._check_fitted()
+        X = self._encode_features(np.asarray(X, dtype=np.float64), self._feature_types)
+        return self._cpp_model.predict_proba(X)
+
+    @property
+    def n_trees(self):
+        cpp = getattr(self, '_cpp_model', None)
+        if cpp is not None:
+            cr = self.convergence_round_
+            return cr if cr is not None else self.n_rounds
+        return 0
+
+
 class GeoXGBClassifier(_GeoXGBBase):
     """
     Geometry-aware gradient boosting classifier.

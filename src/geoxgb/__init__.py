@@ -1,5 +1,11 @@
 from geoxgb.regressor import GeoXGBRegressor, GeoXGBMAERegressor
-from geoxgb.classifier import GeoXGBClassifier
+from geoxgb.classifier import (
+    GeoXGBClassifier,
+    GeoXGBGiniClassifier,
+    GeoXGBFocalClassifier,
+    GeoXGBExpClassifier,
+    GeoXGBHingeClassifier,
+)
 from geoxgb.contributions import ContributionFrame
 from geoxgb.gardener import Gardener
 from geoxgb import report
@@ -18,7 +24,7 @@ from geoxgb.explain import (
 
 try:
     from geoxgb.optimizer import GeoXGBOptimizer
-    __all__ = ["GeoXGBRegressor", "GeoXGBMAERegressor", "GeoXGBClassifier",
+    __all__ = ["GeoXGBRegressor", "GeoXGBMAERegressor", "GeoXGBClassifier", "GeoXGBGiniClassifier",
                "GeoXGBOptimizer", "Gardener", "load_model", "report",
                "ContributionFrame",
                "HART", "FastHART", "PyramidHART",
@@ -26,7 +32,7 @@ try:
                "PartitionGeometry", "format_explanation", "print_explanation",
                "format_summary", "print_summary"]
 except ImportError:
-    __all__ = ["GeoXGBRegressor", "GeoXGBMAERegressor", "GeoXGBClassifier",
+    __all__ = ["GeoXGBRegressor", "GeoXGBMAERegressor", "GeoXGBClassifier", "GeoXGBGiniClassifier",
                "Gardener", "load_model", "report",
                "ContributionFrame",
                "HART", "FastHART", "PyramidHART",

@@ -21,6 +21,10 @@ try:
         GeoXGBConfig,
         CppGeoXGBRegressor,
         CppGeoXGBClassifier,
+        CppGeoXGBGiniClassifier,
+        CppGeoXGBFocalClassifier,
+        CppGeoXGBExpClassifier,
+        CppGeoXGBHingeClassifier,
         CppGeoXGBMulticlassClassifier,
     )
     _CPP_AVAILABLE = True
@@ -29,6 +33,10 @@ except ImportError:
     GeoXGBConfig                    = None
     CppGeoXGBRegressor              = None
     CppGeoXGBClassifier             = None
+    CppGeoXGBGiniClassifier         = None
+    CppGeoXGBFocalClassifier        = None
+    CppGeoXGBExpClassifier          = None
+    CppGeoXGBHingeClassifier        = None
     CppGeoXGBMulticlassClassifier   = None
 
 
@@ -65,10 +73,19 @@ _PYTHON_TO_CPP = {
     "partitioner":           "partitioner",
     "method":                "reduce_method",
     "generation_strategy":   "generation_strategy",
-    "adaptive_reduce_ratio": "adaptive_reduce_ratio",
+    "adaptive_reduce_ratio":    "adaptive_reduce_ratio",
     "sample_block_n":        "sample_block_n",
     "leave_last_block_out":  "leave_last_block_out",
     "loss":                  "loss",
+    "lazy_refit_tol":        "lazy_refit_tol",
+    "fixed_geometry":        "fixed_geometry",
+    "progressive_expand":    "progressive_expand",
+    "fast_refit":            "fast_refit",
+    "colsample_bytree":      "colsample_bytree",
+    "goss_alpha":            "goss_alpha",
+    "goss_beta":             "goss_beta",
+    "predict_stride":        "predict_stride",
+    "grad_budget_weight":    "grad_budget_weight",
 }
 
 

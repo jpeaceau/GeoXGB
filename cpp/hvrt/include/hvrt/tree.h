@@ -8,15 +8,19 @@ namespace hvrt {
 
 // ── Tree node ─────────────────────────────────────────────────────────────────
 
+// Layout: doubles first, then ints, then bools — minimises padding on 64-bit.
+// Before: 48 bytes (7 padding bytes).  After: 40 bytes (1 padding byte).
 struct TreeNode {
-    int    feature_idx   = -1;     // global feature index (in X_z)
     double threshold     = 0.0;
-    bool   is_binary     = false;  // true → binary-stream split (value <= threshold)
+    double leaf_value    = 0.0;    // mean target at leaf (used for GBT prediction)
+    int    feature_idx   = -1;     // global feature index (in X_z)
+    int    bin_threshold = -1;     // bin index for binned predict (go left if bin <= this)
     int    left          = -1;     // child node index
     int    right         = -1;
-    bool   is_leaf       = false;
     int    partition_id  = -1;     // assigned at leaf (HVRT partition routing)
-    double leaf_value    = 0.0;    // mean target at leaf (used for GBT prediction)
+    bool   is_binary     = false;  // true → binary-stream split (value <= threshold)
+    bool   is_leaf       = false;
+    // 2 bytes padding to align to 8-byte boundary → total 40 bytes
 };
 
 // ── Partition tree ────────────────────────────────────────────────────────────
@@ -52,12 +56,24 @@ public:
     // Avoids the heap allocation inside predict(); use inside parallel loops.
     void predict_into(const Eigen::MatrixXd& X, Eigen::VectorXd& out) const;
 
+    // predict_from_binned: predict using pre-binned uint8 data instead of raw
+    // doubles.  8x less memory per value → much better cache utilization on
+    // large datasets.  Requires build() to have been called first (populates
+    // bin thresholds in the flat tree layout).
+    void predict_binned_into(
+        const Eigen::Matrix<uint8_t, Eigen::Dynamic, Eigen::Dynamic, Eigen::RowMajor>& X_bin,
+        Eigen::VectorXd& out) const;
+
     // Feature importance: fraction of total variance-reduction gain per feature.
     // Length d_full (all features in X_z used during fit).
     const std::vector<double>& feature_importances() const { return feature_importances_; }
 
     int n_leaves() const { return n_leaves_; }
     bool fitted()  const { return fitted_; }
+
+    // Serialization
+    std::vector<uint8_t> to_bytes() const;
+    void from_bytes(const std::vector<uint8_t>& data);
 
     // Inject pre-computed bin edges so the next build() skips the O(n·d·log n) sort.
     // Edges must match the Binner that produced X_binned passed to build().
@@ -84,6 +100,16 @@ private:
         int   bin        = -1;
     };
 
+    // Histogram data produced by evaluate_continuous_splits, stored in
+    // QueueEntry so sibling nodes can derive their histogram by subtraction.
+    struct HistogramData {
+        std::vector<double> bin_sum;
+        std::vector<double> bin_sum_sq;
+        std::vector<int>    bin_cnt;
+        double sum_p = 0.0;
+        double sum_sq_p = 0.0;
+    };
+
     static SplitResult evaluate_continuous_splits(
         const std::vector<int>& indices,
         const Eigen::Matrix<uint8_t, Eigen::Dynamic, Eigen::Dynamic, Eigen::RowMajor>& X_binned,
@@ -93,7 +119,14 @@ private:
         int n_bins,
         int min_samples_leaf,
         SplitStrategy strategy = SplitStrategy::Best,
-        uint64_t rng_state = 0);
+        uint64_t rng_state = 0,
+        const std::vector<double>* parent_sum = nullptr,
+        const std::vector<double>* parent_sum_sq = nullptr,
+        const std::vector<int>*    parent_cnt = nullptr,
+        double parent_target_sum = 0.0,
+        double parent_target_sum_sq = 0.0,
+        const std::vector<int>* feature_subset = nullptr,
+        HistogramData* hist_out = nullptr);
 
     SplitResult evaluate_binary_splits(
         const std::vector<int>& indices,
@@ -107,6 +140,20 @@ private:
     int d_full_  = 0;
     int n_leaves_= 0;
     bool fitted_ = false;
+
+    // ── Flat tree layout for cache-friendly prediction ───────────────────────
+    // Populated after build().  SoA (struct-of-arrays) layout for better
+    // cache utilization: all feature indices contiguous, all thresholds
+    // contiguous, etc.  predict_binned_into uses flat_bin_thresh_ (uint8)
+    // for 8x memory reduction.
+    std::vector<int16_t>  flat_feature_;      // feature index per node (-1 = leaf)
+    std::vector<uint8_t>  flat_bin_thresh_;   // bin threshold per node (for binned predict)
+    std::vector<int32_t>  flat_left_;         // left child index
+    std::vector<int32_t>  flat_right_;        // right child index
+    std::vector<double>   flat_leaf_value_;   // leaf value (only valid for leaves)
+    bool flat_valid_ = false;
+
+    void build_flat_layout();  // populate flat arrays from nodes_
 
     // cached bin_edges from Binner (needed during build + apply)
     std::vector<Eigen::VectorXd> bin_edges_;

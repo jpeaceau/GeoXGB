@@ -455,6 +455,9 @@ std::vector<int> orthant_stratified(
 
     // 1. Component-wise median of X_z
     Eigen::VectorXd medians(d);
+#ifdef _OPENMP
+    #pragma omp parallel for schedule(static)
+#endif
     for (int j = 0; j < d; ++j) {
         std::vector<double> col(n);
         for (int i = 0; i < n; ++i) col[i] = X_z(i, j);

@@ -4,6 +4,27 @@ project(geoxgb LANGUAGES CXX)
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
+# ── Compiler optimisation flags ───────────────────────────────────────────────
+# Release mode gets -O2 by default; add architecture-specific flags, LTO,
+# and fast-math (safe here: no NaN-dependent logic, finite-only inputs).
+if(MSVC)
+    # /fp:precise keeps IEEE compliance (no reordering); /fp:fast can flip
+    # marginal coefficient signs in interpretability tests.
+    # /Ob3: aggressive inlining.  /GL + /LTCG: whole-program LTO.
+    # /arch:AVX2: 256-bit SIMD.
+    add_compile_options(/O2 /Ob3 /GL /fp:precise /arch:AVX2 /DNDEBUG)
+    add_link_options(/LTCG)
+else()
+    # -ffast-math safe on GCC/Clang: our code doesn't depend on NaN semantics
+    # or strict associativity. Use -ffp-contract=fast for FMA without full
+    # -ffast-math if tests prove sensitive on Linux CI.
+    add_compile_options(-O3 -march=native -ffast-math -flto -DNDEBUG)
+    add_link_options(-flto)
+endif()
+
+# ── OpenMP ────────────────────────────────────────────────────────────────────
+find_package(OpenMP)
+
 # ── Eigen ─────────────────────────────────────────────────────────────────────
 find_package(Eigen3 3.4 QUIET NO_MODULE)
 if(NOT Eigen3_FOUND)
@@ -51,6 +72,9 @@ target_include_directories(hvrt_core PUBLIC
 )
 
 target_link_libraries(hvrt_core PUBLIC Eigen3::Eigen)
+if(OpenMP_CXX_FOUND)
+    target_link_libraries(hvrt_core PUBLIC OpenMP::OpenMP_CXX)
+endif()
 set_target_properties(hvrt_core PROPERTIES POSITION_INDEPENDENT_CODE ON)
 
 # Suppress warnings from vendored HVRT source (not our code to fix)

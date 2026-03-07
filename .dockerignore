@@ -1,0 +1,12 @@
+.git
+.venv
+__pycache__
+*.pyc
+*.egg-info
+build/
+dist/
+.eggs/
+catboost_info/
+opus_study/
+benchmarks/suite/results/
+*.db

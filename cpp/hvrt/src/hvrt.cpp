@@ -120,14 +120,17 @@ HVRT& HVRT::fit(
         X_z_, X_binned, hist_cont_cols, binary_cols, target_vec, cfg_);
 
     // 6. Prepare expander (all columns are continuous)
-    std::vector<int> all_cols(d);
-    std::iota(all_cols.begin(), all_cols.end(), 0);
-    expander_.prepare(
-        X_z_, partition_ids_,
-        all_cols, /*cat_cols=*/{},
-        cfg_.gen_strategy,
-        cfg_.bandwidth,
-        cfg_.n_threads);
+    //    Skipped when skip_expander is set (fast_refit: no expand needed).
+    if (!cfg_.skip_expander) {
+        std::vector<int> all_cols(d);
+        std::iota(all_cols.begin(), all_cols.end(), 0);
+        expander_.prepare(
+            X_z_, partition_ids_,
+            all_cols, /*cat_cols=*/{},
+            cfg_.gen_strategy,
+            cfg_.bandwidth,
+            cfg_.n_threads);
+    }
 
     fitted_ = true;
     return *this;
@@ -164,7 +167,7 @@ HVRT& HVRT::refit(std::optional<Eigen::VectorXd> y, double y_weight_override)
     bool parts_changed = (old_part_ids.size() != partition_ids_.size())
                          || (old_part_ids != partition_ids_);
     last_refit_stable_ = !parts_changed;
-    if (parts_changed) {
+    if (parts_changed && !cfg_.skip_expander) {
         const int d = static_cast<int>(X_z_.cols());
         std::vector<int> all_cols(d);
         std::iota(all_cols.begin(), all_cols.end(), 0);

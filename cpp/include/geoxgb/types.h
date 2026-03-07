@@ -100,6 +100,63 @@ struct GeoXGBConfig {
     double      convergence_tol  = 0.0;             // 0.0 = disabled
     double      pos_class_weight = 1.0;             // binary classifier positive-class scale
 
+    // Blended e₃ target: when > 0, the HVRT geometry target is blended with
+    // the third elementary symmetric polynomial e₃ (degree-3 interactions).
+    // target = zscore(T + e3_lambda * e₃).  e₃ is noise-invariant and captures
+    // triple-feature interactions that T (degree-2) is blind to.
+    // 0.0 = disabled (default).  Recommended range: 1.0–3.0.
+    double e3_target_lambda   = 0.0;
+
+    // ── Scalability experiments (Tests A/B/C) ──────────────────────────────
+    // Test A: Lazy refit — skip do_resample when mean |gradient| hasn't
+    // changed significantly since last refit.  Threshold = relative change.
+    // 0.0 = disabled (always refit).
+    double lazy_refit_tol     = 0.0;
+
+    // Test B: Fixed geometry — fit HVRT once on round 0, then at each refit
+    // only re-reduce using the existing HVRT (no refit of the partition tree).
+    // Reduce/expand still happen, but the whitener + partition tree are frozen.
+    bool   fixed_geometry     = false;
+
+    // Test C: Progressive expand — scale expand_ratio linearly from 0 to
+    // expand_ratio over the course of training: eff_er = er * (round / n_rounds).
+    // false = constant expand_ratio (default).
+    bool   progressive_expand = false;
+
+    // Test D: Fast refit — on refits (not initial fit), use random selection
+    // within partitions instead of variance_ordered (O(n) vs O(n²/partition)),
+    // and skip synthetic expand entirely (no KDE generation, no knn_assign_y).
+    // HVRT tree refit still runs (important as geometry "memory reset").
+    // Addresses both reduce and expand bottlenecks simultaneously.
+    // false = full reduce + expand pipeline (default).
+    bool   fast_refit         = false;
+
+    // ── Performance optimisations ──────────────────────────────────────────
+    // Feature subsampling: fraction of features used per tree (1.0 = all).
+    // Also acts as regularisation (decorrelates trees).
+    double colsample_bytree   = 1.0;
+
+    // GOSS (Gradient-based One-Side Sampling):
+    // Keep top goss_alpha fraction of large-gradient samples,
+    // randomly sample goss_beta fraction of the remainder.
+    // 0.0 = disabled.
+    double goss_alpha         = 0.0;
+    double goss_beta          = 0.0;
+
+    // Predict stride: run full-dataset predict every N rounds instead of
+    // every round.  Between strides, accumulate on reduced set only.
+    // 1 = every round (default, current behaviour).
+    int    predict_stride     = 1;
+
+    // Gradient-aware budget allocation (deterministic GOSS via HVRT).
+    // At each refit, partition reduction budgets are weighted by gradient mass:
+    //   budget_p ∝ (1−α)·(n_p/n) + α·(Σ_{i∈p}|g_i| / Σ|g|)
+    // α = grad_budget_weight.  High-gradient partitions (near decision boundary)
+    // get more of the reduction budget; low-gradient partitions (well-predicted)
+    // are reduced more aggressively.  Fully deterministic — no random sampling.
+    // 0.0 = disabled (standard size-proportional budgets).  Range [0, 1].
+    double grad_budget_weight = 0.0;
+
     // Misc
     int    random_state       = 42;
     bool   variance_weighted  = true;

@@ -16,6 +16,9 @@ std::vector<bool> Binner::fit(const Eigen::MatrixXd& X_z_cont, int n_bins) {
     edges_.resize(d);
     binary_mask_.assign(d, false);
 
+#ifdef _OPENMP
+    #pragma omp parallel for schedule(static)
+#endif
     for (int f = 0; f < d; ++f) {
         // Count unique values
         std::vector<double> col(n);
@@ -80,6 +83,9 @@ Binner::transform(const Eigen::MatrixXd& X_z_cont) const {
     using BinMat = Eigen::Matrix<uint8_t, Eigen::Dynamic, Eigen::Dynamic, Eigen::RowMajor>;
     BinMat out(n, d);
 
+#ifdef _OPENMP
+    #pragma omp parallel for schedule(static)
+#endif
     for (int f = 0; f < d; ++f) {
         const Eigen::VectorXd& e = edges_[f];
         int nb = static_cast<int>(e.size()) - 1; // number of bins

@@ -19,10 +19,14 @@ Makefile
 
 # Data / results (large, not source)
 benchmarks/results/
+benchmarks/suite/results/
 benchmarks/__pycache__/
 data/*.csv
 data/*.pkl
 insights/
+
+# Private architecture docs
+architecture/
 
 # IDE / editor
 .idea/
