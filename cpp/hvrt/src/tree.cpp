@@ -1,8 +1,9 @@
 #include "hvrt/tree.h"
 #include <algorithm>
-#include <numeric>
 #include <cmath>
 #include <cstring>
+#include <memory>
+#include <numeric>
 #include <queue>
 #include <stdexcept>
 
