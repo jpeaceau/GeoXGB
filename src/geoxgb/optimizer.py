@@ -129,6 +129,7 @@ class GeoXGBOptimizer:
         "refit_interval": 50,
         "expand_ratio":   0.1,
         "y_weight":       0.25,
+        "colsample_bytree": 1.0,
         "hvrt_min_samples_leaf": None,
     }
 
@@ -136,10 +137,11 @@ class GeoXGBOptimizer:
         "n_rounds":       [500, 1000, 1500, 2000, 3000, 4000],
         "learning_rate":  [0.003, 0.005, 0.008, 0.01, 0.015, 0.02, 0.03, 0.05, 0.08, 0.1],
         "max_depth":      [2, 3, 4, 5, 6, 7],
-        "reduce_ratio":   [0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 0.95],
+        "reduce_ratio":   [0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 0.95],
         "refit_interval": [10, 20, 50, 100, 200, 300, 500],
         "expand_ratio":   [0.0, 0.05, 0.1, 0.2, 0.3, 0.4, 0.5],
         "y_weight":       [0.1, 0.15, 0.2, 0.25, 0.3, 0.4, 0.5],
+        "colsample_bytree": [0.6, 0.7, 0.8, 0.9, 1.0],
         "hvrt_min_samples_leaf": [None, 5, 10, 20, 30],
     }
 
@@ -156,6 +158,7 @@ class GeoXGBOptimizer:
         "refit_interval": 50,
         "expand_ratio":   0.1,
         "y_weight":       0.25,
+        "colsample_bytree": 0.8,
         "class_weight":   None,
         "hvrt_min_samples_leaf": None,
     }
@@ -164,10 +167,11 @@ class GeoXGBOptimizer:
         "n_rounds":       [500, 1000, 1500, 2000, 3000, 4000],
         "learning_rate":  [0.003, 0.005, 0.008, 0.01, 0.015, 0.02, 0.03, 0.05, 0.08, 0.1],
         "max_depth":      [2, 3, 4, 5, 6, 7],
-        "reduce_ratio":   [0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 0.95],
+        "reduce_ratio":   [0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 0.95],
         "refit_interval": [10, 20, 50, 100, 200, 300, 500],
         "expand_ratio":   [0.0, 0.05, 0.1, 0.2, 0.3, 0.4, 0.5],
         "y_weight":       [0.1, 0.15, 0.2, 0.25, 0.3, 0.4, 0.5, 0.6, 0.8],
+        "colsample_bytree": [0.6, 0.7, 0.8, 0.9, 1.0],
         "class_weight":   [None, "balanced"],
         "hvrt_min_samples_leaf": [None, 5, 10, 20, 30],
     }

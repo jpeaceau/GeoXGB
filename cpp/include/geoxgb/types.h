@@ -130,7 +130,7 @@ struct GeoXGBConfig {
     // partitions the full dataset for geometry — only the reduce step
     // filters by usage.  When fewer than n_keep unused samples remain,
     // the usage mask resets (new epoch).
-    bool   sample_without_replacement = false;
+    bool   sample_without_replacement = true;
 
     // ── Performance optimisations ──────────────────────────────────────────
     // Feature subsampling: fraction of features used per tree (1.0 = all).

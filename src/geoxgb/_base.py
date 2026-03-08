@@ -99,7 +99,7 @@ class _GeoXGBBase:
         leave_last_block_out=False,
         n_bins=64,
         max_resample_n=None,
-        sample_without_replacement=False,
+        sample_without_replacement=True,
         colsample_bytree=1.0,
         predict_stride=1,
         grad_budget_weight=0.0,
