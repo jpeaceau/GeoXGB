@@ -13,6 +13,7 @@ import logging
 import sys
 import time
 import traceback
+from concurrent.futures import ProcessPoolExecutor, as_completed
 from pathlib import Path
 
 import numpy as np
@@ -220,11 +221,26 @@ def run_hpo_single(ds: dict, save_models: bool = False) -> list[dict]:
 # Main entry point
 # ---------------------------------------------------------------------------
 
+def _run_dataset_task(ds: dict, m: str, save_models: bool) -> list[dict]:
+    """Worker function for parallel execution. Runs one dataset in one mode."""
+    t0 = time.perf_counter()
+    if m == "default":
+        rows = run_default_single(ds, save_models=save_models)
+    else:
+        rows = run_hpo_single(ds, save_models=save_models)
+    for r in rows:
+        r["mode"] = m
+    elapsed = time.perf_counter() - t0
+    log.info("  %s [%s] completed in %.1fs", ds["name"], m, elapsed)
+    return rows
+
+
 def run(mode: str = "default",
         category: str | None = None,
         dataset_name: str | None = None,
         save_models: bool = False,
-        output: str | None = None):
+        output: str | None = None,
+        workers: int = 1):
     """
     Run the full benchmark suite.
 
@@ -235,6 +251,7 @@ def run(mode: str = "default",
     dataset_name : optional filter to a single dataset
     save_models : if True, serialize fitted models for later inspection
     output : optional output CSV path (default: results/<mode>_results.csv)
+    workers : int, parallel dataset workers (1 = sequential)
     """
     datasets = get_datasets(category, dataset_name)
     if not datasets:
@@ -245,8 +262,8 @@ def run(mode: str = "default",
     n_datasets = len(datasets)
     categories = sorted(set(d["category"] for d in datasets))
     log.info("=" * 70)
-    log.info("BENCHMARK SUITE — mode=%s, %d datasets across %d categories",
-             mode, n_datasets, len(categories))
+    log.info("BENCHMARK SUITE — mode=%s, %d datasets across %d categories, workers=%d",
+             mode, n_datasets, len(categories), workers)
     log.info("Categories: %s", ", ".join(categories))
     log.info("Save models: %s", save_models)
     log.info("=" * 70)
@@ -254,27 +271,35 @@ def run(mode: str = "default",
     all_rows = []
     modes = ["default", "hpo"] if mode == "all" else [mode]
 
-    for m in modes:
-        log.info("-" * 70)
-        log.info("Starting mode: %s", m)
-        log.info("-" * 70)
-
-        for i, ds in enumerate(datasets, 1):
-            log.info("[%d/%d] %s", i, n_datasets, ds["name"])
-            t0 = time.perf_counter()
-
-            if m == "default":
-                rows = run_default_single(ds, save_models=save_models)
-            else:
-                rows = run_hpo_single(ds, save_models=save_models)
-
-            # Tag rows with mode
-            for r in rows:
-                r["mode"] = m
-
-            all_rows.extend(rows)
-            elapsed = time.perf_counter() - t0
-            log.info("  Completed in %.1fs", elapsed)
+    if workers <= 1:
+        # Sequential (original behaviour)
+        for m in modes:
+            log.info("-" * 70)
+            log.info("Starting mode: %s", m)
+            log.info("-" * 70)
+            for i, ds in enumerate(datasets, 1):
+                log.info("[%d/%d] %s", i, n_datasets, ds["name"])
+                all_rows.extend(_run_dataset_task(ds, m, save_models))
+    else:
+        # Parallel across datasets
+        tasks = [(ds, m) for m in modes for ds in datasets]
+        log.info("Submitting %d tasks to %d workers", len(tasks), workers)
+        with ProcessPoolExecutor(max_workers=workers) as pool:
+            futures = {
+                pool.submit(_run_dataset_task, ds, m, save_models): (ds["name"], m)
+                for ds, m in tasks
+            }
+            done_count = 0
+            for future in as_completed(futures):
+                done_count += 1
+                name, m = futures[future]
+                try:
+                    rows = future.result()
+                    all_rows.extend(rows)
+                    log.info("[%d/%d] %s (%s) done", done_count, len(tasks), name, m)
+                except Exception as e:
+                    log.error("[%d/%d] %s (%s) FAILED: %s",
+                              done_count, len(tasks), name, m, e)
 
     # Write results
     df = pd.DataFrame(all_rows)

@@ -23,6 +23,8 @@ RUN mkdir -p /app/benchmarks/suite/results/models
 
 # Performance: disable Python hash randomization for reproducibility
 ENV PYTHONHASHSEED=0
+# Default OpenMP threads per worker (oversubscription guard)
+ENV OMP_NUM_THREADS=2
 
 ENTRYPOINT ["python", "-m", "benchmarks.suite"]
-CMD ["list"]
+CMD ["run", "--mode", "all", "--save-models", "--workers", "16"]

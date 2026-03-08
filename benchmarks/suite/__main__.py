@@ -34,6 +34,8 @@ def main():
                        help="Serialize fitted models for later inspection")
     run_p.add_argument("--output", type=str, default=None,
                        help="Output CSV path (default: results/<mode>_results.csv)")
+    run_p.add_argument("--workers", type=int, default=1,
+                       help="Parallel dataset workers (default: 1 = sequential)")
 
     # --- list ---
     list_p = sub.add_parser("list", help="List available datasets and categories")
@@ -66,6 +68,7 @@ def main():
             dataset_name=args.dataset,
             save_models=args.save_models,
             output=args.output,
+            workers=args.workers,
         )
 
 
