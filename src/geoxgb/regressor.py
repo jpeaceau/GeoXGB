@@ -129,11 +129,8 @@ class GeoXGBRegressor(_GeoXGBBase):
         sample_block_n='auto',
         leave_last_block_out=False,
         n_bins=64,
-        fast_refit=False,
         max_resample_n=None,
         colsample_bytree=1.0,
-        goss_alpha=0.0,
-        goss_beta=0.0,
         predict_stride=1,
         grad_budget_weight=0.0,
     ):
@@ -180,11 +177,8 @@ class GeoXGBRegressor(_GeoXGBBase):
             sample_block_n=sample_block_n,
             leave_last_block_out=leave_last_block_out,
             n_bins=n_bins,
-            fast_refit=fast_refit,
             max_resample_n=max_resample_n,
             colsample_bytree=colsample_bytree,
-            goss_alpha=goss_alpha,
-            goss_beta=goss_beta,
             predict_stride=predict_stride,
             grad_budget_weight=grad_budget_weight,
         )

@@ -123,25 +123,19 @@ struct GeoXGBConfig {
     // false = constant expand_ratio (default).
     bool   progressive_expand = false;
 
-    // Test D: Fast refit — on refits (not initial fit), use random selection
-    // within partitions instead of variance_ordered (O(n) vs O(n²/partition)),
-    // and skip synthetic expand entirely (no KDE generation, no knn_assign_y).
-    // HVRT tree refit still runs (important as geometry "memory reset").
-    // Addresses both reduce and expand bottlenecks simultaneously.
-    // false = full reduce + expand pipeline (default).
-    bool   fast_refit         = false;
+    // ── Determinism & sample management ─────────────────────────────────
+    // Sample-without-replacement: each sample is used in at most one refit
+    // window before all samples have been cycled (epoch).  At each refit,
+    // only unused samples are candidates for reduction.  HVRT still
+    // partitions the full dataset for geometry — only the reduce step
+    // filters by usage.  When fewer than n_keep unused samples remain,
+    // the usage mask resets (new epoch).
+    bool   sample_without_replacement = false;
 
     // ── Performance optimisations ──────────────────────────────────────────
     // Feature subsampling: fraction of features used per tree (1.0 = all).
-    // Also acts as regularisation (decorrelates trees).
+    // Deterministic round-robin rotation (no RNG) when < 1.0.
     double colsample_bytree   = 1.0;
-
-    // GOSS (Gradient-based One-Side Sampling):
-    // Keep top goss_alpha fraction of large-gradient samples,
-    // randomly sample goss_beta fraction of the remainder.
-    // 0.0 = disabled.
-    double goss_alpha         = 0.0;
-    double goss_beta          = 0.0;
 
     // Predict stride: run full-dataset predict every N rounds instead of
     // every round.  Between strides, accumulate on reduced set only.

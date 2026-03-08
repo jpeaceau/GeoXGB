@@ -166,6 +166,12 @@ private:
     // Gradient amplification: per-partition power-scaled weight cache.
     // Recomputed at each refit boundary, reused between refits.
     std::vector<double> grad_amp_weights_;
+
+    // ── Sample-without-replacement tracking ──────────────────────────────
+    // When cfg_.sample_without_replacement is true, tracks which samples
+    // (indices into X_cur) have been consumed by a refit window.
+    // Reset when fewer than n_keep unused samples remain (new epoch).
+    std::vector<bool> used_samples_;
 };
 
 } // namespace geoxgb

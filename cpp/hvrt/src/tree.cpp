@@ -455,25 +455,29 @@ Eigen::VectorXi PartitionTree::build(
     double total_gain = 0.0;
     std::vector<std::pair<int,double>> gain_log; // (feature, gain)
 
-    // Feature subsampling: build candidate subset per-tree (if colsample < 1)
+    // Feature subsampling: deterministic round-robin rotation (if colsample < 1)
     // This applies to GBT weak learners called from geoxgb_base.cpp;
     // the HVRT partition tree always uses all features (colsample not in HVRTConfig).
+    //
+    // At each round, d_drop consecutive features are excluded from a circular
+    // arrangement.  The drop window advances by d_drop each round, so over
+    // ceil(d_cont / d_drop) rounds every feature is dropped exactly once.
+    // Fully deterministic — no RNG — for regulatory reproducibility.
     std::vector<int> feat_subset_vec;
     const std::vector<int>* feat_subset_ptr = nullptr;
     if (cfg.colsample_bytree > 0.0 && cfg.colsample_bytree < 1.0 && d_cont > 1) {
         int n_sel = std::max(1, static_cast<int>(d_cont * cfg.colsample_bytree));
-        feat_subset_vec.resize(d_cont);
-        std::iota(feat_subset_vec.begin(), feat_subset_vec.end(), 0);
-        // LCG shuffle to select n_sel features
-        uint64_t lcg_feat = static_cast<uint64_t>(cfg.random_state) * 2654435761ULL + 1;
-        for (int i = 0; i < n_sel; ++i) {
-            lcg_feat = lcg_feat * 6364136223846793005ULL + 1442695040888963407ULL;
-            int j = i + static_cast<int>((lcg_feat >> 33) % static_cast<uint64_t>(d_cont - i));
-            std::swap(feat_subset_vec[i], feat_subset_vec[j]);
+        int d_drop = d_cont - n_sel;
+        if (d_drop > 0) {
+            int drop_start = (cfg.random_state * d_drop) % d_cont;
+            feat_subset_vec.reserve(n_sel);
+            for (int f = 0; f < d_cont; ++f) {
+                int offset = (f - drop_start + d_cont) % d_cont;
+                if (offset >= d_drop)
+                    feat_subset_vec.push_back(f);
+            }
+            feat_subset_ptr = &feat_subset_vec;
         }
-        feat_subset_vec.resize(n_sel);
-        std::sort(feat_subset_vec.begin(), feat_subset_vec.end()); // sorted for cache access
-        feat_subset_ptr = &feat_subset_vec;
     }
 
     while (!bfs.empty()) {

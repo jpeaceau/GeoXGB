@@ -65,10 +65,9 @@ PYBIND11_MODULE(_geoxgb_cpp, m) {
         .def_readwrite("lazy_refit_tol",        &GeoXGBConfig::lazy_refit_tol)
         .def_readwrite("fixed_geometry",        &GeoXGBConfig::fixed_geometry)
         .def_readwrite("progressive_expand",    &GeoXGBConfig::progressive_expand)
-        .def_readwrite("fast_refit",            &GeoXGBConfig::fast_refit)
+        // fast_refit removed — was introducing unnecessary randomness
+        .def_readwrite("sample_without_replacement", &GeoXGBConfig::sample_without_replacement)
         .def_readwrite("colsample_bytree",     &GeoXGBConfig::colsample_bytree)
-        .def_readwrite("goss_alpha",           &GeoXGBConfig::goss_alpha)
-        .def_readwrite("goss_beta",            &GeoXGBConfig::goss_beta)
         .def_readwrite("predict_stride",       &GeoXGBConfig::predict_stride)
         .def_readwrite("grad_budget_weight",   &GeoXGBConfig::grad_budget_weight)
         .def("__repr__", [](const GeoXGBConfig& c) {

@@ -80,10 +80,8 @@ _PYTHON_TO_CPP = {
     "lazy_refit_tol":        "lazy_refit_tol",
     "fixed_geometry":        "fixed_geometry",
     "progressive_expand":    "progressive_expand",
-    "fast_refit":            "fast_refit",
+    "sample_without_replacement": "sample_without_replacement",
     "colsample_bytree":      "colsample_bytree",
-    "goss_alpha":            "goss_alpha",
-    "goss_beta":             "goss_beta",
     "predict_stride":        "predict_stride",
     "grad_budget_weight":    "grad_budget_weight",
 }

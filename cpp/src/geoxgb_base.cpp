@@ -278,7 +278,7 @@ GeoXGBBase::ResampleResult GeoXGBBase::do_resample(
     hcfg.y_weight     = static_cast<float>(cfg_.y_weight);
     hcfg.n_bins       = 32;  // HVRT partition tree bins
     hcfg.random_state = cfg_.random_state + seed_offset;
-    hcfg.skip_expander = cfg_.fast_refit;  // no expand → no need to fit KDE
+    hcfg.skip_expander = false;
 
     // GeoXGB-specific auto-tune: HVRT's standalone for_reduction formula
     // (msl = d*80/3) is designed for density estimation and is far too
@@ -459,11 +459,59 @@ GeoXGBBase::ResampleResult GeoXGBBase::do_resample(
         n_keep = std::max(10, static_cast<int>(n * eff_reduce));
     }
 
+    // ── Sample-without-replacement: build availability pool ─────────────
+    // HVRT partitions the full dataset for geometry; the reduce step only
+    // draws from unused samples.  When the pool is exhausted, reset (epoch).
+    std::vector<int> avail_map;       // maps filtered index → original index
+    int n_avail = n;                  // effective pool size for reduce
+    bool swr_active = cfg_.sample_without_replacement;
+
+    // Filtered views (only materialised when swr_active)
+    Eigen::MatrixXd X_z_f;
+    Eigen::VectorXi pid_f;
+    Eigen::VectorXd y_f;
+
+    if (swr_active) {
+        if (static_cast<int>(used_samples_.size()) != n)
+            used_samples_.assign(n, false);
+
+        avail_map.reserve(n);
+        for (int i = 0; i < n; ++i)
+            if (!used_samples_[i]) avail_map.push_back(i);
+        n_avail = static_cast<int>(avail_map.size());
+
+        // Epoch reset: not enough unused samples to fill a batch
+        if (n_avail < n_keep) {
+            std::fill(used_samples_.begin(), used_samples_.end(), false);
+            avail_map.resize(n);
+            std::iota(avail_map.begin(), avail_map.end(), 0);
+            n_avail = n;
+        }
+
+        // Build filtered X_z, partition_ids, y_signal for reduce
+        const Eigen::MatrixXd& X_z_full = h->X_z();
+        const Eigen::VectorXi& pid_full = h->partition_ids();
+        X_z_f.resize(n_avail, X_z_full.cols());
+        pid_f.resize(n_avail);
+        y_f.resize(n_avail);
+        for (int k = 0; k < n_avail; ++k) {
+            X_z_f.row(k) = X_z_full.row(avail_map[k]);
+            pid_f[k]     = pid_full[avail_map[k]];
+            y_f[k]       = y_signal[avail_map[k]];
+        }
+        // Adjust n_keep to not exceed available pool
+        n_keep = std::min(n_keep, n_avail);
+    }
+
+    // References to the data the reduce step will operate on.
+    // SWR mode: filtered views.  Normal mode: full HVRT state.
+    const Eigen::MatrixXd& X_z_red = swr_active ? X_z_f : h->X_z();
+    const Eigen::VectorXi& pid_red = swr_active ? pid_f : h->partition_ids();
+    const Eigen::VectorXd& y_red_signal = swr_active ? y_f : y_signal;
+    const int n_red_pool = swr_active ? n_avail : n;
+
     // Reduce: dispatch on reduce_method
-    // fast_refit on refits: use stratified (random) selection — O(n) instead of
-    // O(n²/partition) for variance_ordered.  Initial fit still uses full method.
     std::vector<int> red_idx_vec;
-    const bool use_fast_reduce = cfg_.fast_refit && !is_initial_fit;
 
     // ── Gradient-aware budget allocation (deterministic GOSS via HVRT) ───────
     // At refit, weight each partition's reduction budget by its gradient mass:
@@ -472,22 +520,19 @@ GeoXGBBase::ResampleResult GeoXGBBase::do_resample(
     // low-gradient partitions (well-predicted) get reduced more aggressively.
     // Within each partition, variance_ordered preserves geometric diversity.
     const bool use_grad_budgets = !is_initial_fit
-                                  && cfg_.grad_budget_weight > 0.0
-                                  && !use_fast_reduce;
+                                  && cfg_.grad_budget_weight > 0.0;
 
     if (use_grad_budgets) {
         const double alpha = cfg_.grad_budget_weight;
-        const Eigen::VectorXi& part_ids = h->partition_ids();
-        const Eigen::MatrixXd& X_z = h->X_z();
-        const int n_parts = part_ids.maxCoeff() + 1;
+        const int n_parts = pid_red.maxCoeff() + 1;
 
         // Accumulate per-partition |gradient| mass and sample counts
         std::vector<double> grad_mass(n_parts, 0.0);
         std::vector<int>    part_sizes(n_parts, 0);
         std::vector<std::vector<int>> part_indices(n_parts);
-        for (int i = 0; i < n; ++i) {
-            const int p = part_ids[i];
-            grad_mass[p] += std::abs(y_signal[i]);
+        for (int i = 0; i < n_red_pool; ++i) {
+            const int p = pid_red[i];
+            grad_mass[p] += std::abs(y_red_signal[i]);
             part_sizes[p]++;
             part_indices[p].push_back(i);
         }
@@ -501,7 +546,7 @@ GeoXGBBase::ResampleResult GeoXGBBase::do_resample(
         int allocated = 0;
         for (int p = 0; p < n_parts; ++p) {
             if (part_sizes[p] == 0) continue;
-            double w_size = static_cast<double>(part_sizes[p]) / n;
+            double w_size = static_cast<double>(part_sizes[p]) / n_red_pool;
             double w_grad = (total_grad > 1e-12)
                           ? grad_mass[p] / total_grad
                           : w_size;  // fallback if all gradients zero
@@ -550,9 +595,9 @@ GeoXGBBase::ResampleResult GeoXGBBase::do_resample(
                 for (int idx : pidx) red_idx_vec.push_back(idx);
             } else {
                 // Build sub-matrix for variance_ordered
-                Eigen::MatrixXd X_part(ps, X_z.cols());
+                Eigen::MatrixXd X_part(ps, X_z_red.cols());
                 for (int k = 0; k < ps; ++k)
-                    X_part.row(k) = X_z.row(pidx[k]);
+                    X_part.row(k) = X_z_red.row(pidx[k]);
 
                 std::vector<int> local_sel = hvrt::variance_ordered(
                     X_part, budgets[p]);
@@ -562,15 +607,29 @@ GeoXGBBase::ResampleResult GeoXGBBase::do_resample(
             }
         }
 
-    } else if (use_fast_reduce) {
-        red_idx_vec = h->reduce_indices(n_keep, std::nullopt, "stratified", cfg_.variance_weighted);
     } else if (cfg_.reduce_method == "orthant_stratified") {
         red_idx_vec = hvrt::orthant_stratified(
-            h->X_z(), y_signal, n_keep, cfg_.random_state + seed_offset);
+            X_z_red, y_red_signal, n_keep, cfg_.random_state + seed_offset);
     } else {
         const std::string& rm = cfg_.reduce_method.empty() ? "variance" : cfg_.reduce_method;
-        red_idx_vec = h->reduce_indices(n_keep, std::nullopt, rm, cfg_.variance_weighted);
+        hvrt::ReductionMethod rm_enum = hvrt::ReductionMethod::VarianceOrdered;
+        if (rm == "centroid_fps")    rm_enum = hvrt::ReductionMethod::CentroidFPS;
+        else if (rm == "medoid_fps") rm_enum = hvrt::ReductionMethod::MedoidFPS;
+        else if (rm == "stratified") rm_enum = hvrt::ReductionMethod::Stratified;
+        red_idx_vec = hvrt::reduce(X_z_red, pid_red, n_keep,
+            rm_enum, cfg_.variance_weighted,
+            std::nullopt, cfg_.random_state + seed_offset, 1);
     }
+
+    // ── SWR remap: filtered indices → original indices ───────────────────
+    if (swr_active) {
+        for (auto& idx : red_idx_vec)
+            idx = avail_map[idx];
+        // Mark selected samples as used
+        for (int idx : red_idx_vec)
+            used_samples_[idx] = true;
+    }
+
     Eigen::VectorXi red_idx = Eigen::Map<Eigen::VectorXi>(
         red_idx_vec.data(), static_cast<int>(red_idx_vec.size()));
 
@@ -650,15 +709,9 @@ GeoXGBBase::ResampleResult GeoXGBBase::do_resample(
     const std::string& gs = cfg_.generation_strategy.empty()
                             ? "epanechnikov" : cfg_.generation_strategy;
 
-    // fast_refit: skip expand entirely — use only reduced real data.
-    // Eliminates KDE generation + knn_assign_y GEMM + to_z whitening.
-    // Applied on ALL fits (initial + refits) since at 475k the initial expand
-    // with knn_assign_y is itself the primary bottleneck.
-    const bool skip_expand = cfg_.fast_refit;
-
     // Auto-expand: fill up to min_train_samples
     bool expansion_risk = cfg_.auto_expand && (n < cfg_.min_train_samples);
-    if (!skip_expand && expansion_risk && cfg_.expand_ratio == 0.0 && n_red < cfg_.min_train_samples) {
+    if (expansion_risk && cfg_.expand_ratio == 0.0 && n_red < cfg_.min_train_samples) {
         int _eff_min = std::min(cfg_.min_train_samples,
                                 std::max(n * 5, 1000));
         double eff_noise = std::max(noise_mod, 0.1);
@@ -712,7 +765,7 @@ GeoXGBBase::ResampleResult GeoXGBBase::do_resample(
     }
 
     // Manual expand_ratio
-    if (!skip_expand && cfg_.expand_ratio > 0.0) {
+    if (cfg_.expand_ratio > 0.0) {
         double eff_noise = std::max(noise_mod, 0.1);
         // Test C: Progressive expand — scale expand_ratio by training progress
         double eff_expand_ratio = cfg_.expand_ratio;
@@ -900,6 +953,7 @@ void GeoXGBBase::fit_boosting(
     rho_trace_.clear();
     yw_eff_trace_.clear();
     convergence_losses_.clear();
+    used_samples_.clear();  // reset SWR tracking for new fit
     n_train_arg_ = n_arg;
 
     // ── Bin for GBT weak learner trees ───────────────────────────────────────
@@ -1012,10 +1066,6 @@ void GeoXGBBase::fit_boosting(
     // when the size doesn't change, which is the common case between refits.
     Eigen::VectorXd lp_X_buf(n);          // full-dataset predict buffer
     Eigen::VectorXd lp_Xr_buf;            // reduced-set predict buffer
-    Eigen::VectorXd grads_eff_buf;        // GOSS gradient subset
-    Eigen::MatrixXd Xr_eff_buf;           // GOSS X subset
-    Eigen::Matrix<uint8_t, Eigen::Dynamic, Eigen::Dynamic, Eigen::RowMajor> X_bin_eff_buf;
-    std::vector<int> sorted_idx_buf;      // GOSS sort indices
 
     // ── Boosting loop ─────────────────────────────────────────────────────────
     bool converged_early = false;
@@ -1032,6 +1082,7 @@ void GeoXGBBase::fit_boosting(
                 X_bin_full_ = full_binner_.transform(X_cur);
                 xr_changed  = true;
                 last_hvrt = nullptr;  // force fresh HVRT fit on new block
+                used_samples_.clear();  // new block = new sample pool
                 preds_on_X  = predict_from_trees(X_cur, -1);
                 expansion_risk = cfg_.auto_expand && (n < cfg_.min_train_samples);
                 block_just_advanced = true;
@@ -1219,55 +1270,6 @@ void GeoXGBBase::fit_boosting(
             xr_changed = false;
         }
 
-        // ── GOSS: Gradient-based One-Side Sampling ─────────────────────────
-        // Keep top goss_alpha large-gradient samples + randomly sample goss_beta
-        // of the remainder.  Upweight the randomly sampled ones.
-        // Operates on the reduced set (grads, X_bin_r, Xr).
-        // Buffers are pre-allocated above the loop; resize() is a no-op when
-        // sizes are unchanged (common case between refits).
-        const int nr_orig = static_cast<int>(grads.size());
-        bool using_goss = false;
-
-        if (cfg_.goss_alpha > 0.0 && cfg_.goss_beta > 0.0 && nr_orig > 20) {
-            const int n_top = std::max(1, static_cast<int>(nr_orig * cfg_.goss_alpha));
-            const int n_rand = std::max(1, static_cast<int>((nr_orig - n_top) * cfg_.goss_beta));
-
-            // Sort by |gradient| descending (reuse pre-allocated buffer)
-            sorted_idx_buf.resize(nr_orig);
-            std::iota(sorted_idx_buf.begin(), sorted_idx_buf.end(), 0);
-            std::partial_sort(sorted_idx_buf.begin(), sorted_idx_buf.begin() + n_top,
-                              sorted_idx_buf.end(), [&](int a, int b) {
-                return std::abs(grads[a]) > std::abs(grads[b]);
-            });
-
-            // Random sample from the remainder
-            uint64_t goss_lcg = static_cast<uint64_t>(cfg_.random_state + i) * 2654435761ULL + 1;
-            for (int j = n_top; j < n_top + n_rand && j < nr_orig; ++j) {
-                goss_lcg = goss_lcg * 6364136223846793005ULL + 1442695040888963407ULL;
-                int k = n_top + static_cast<int>((goss_lcg >> 33)
-                        % static_cast<uint64_t>(nr_orig - n_top));
-                std::swap(sorted_idx_buf[j], sorted_idx_buf[k]);
-            }
-
-            const int n_goss = n_top + n_rand;
-            const double upweight = static_cast<double>(nr_orig - n_top) / n_rand;
-
-            grads_eff_buf.resize(n_goss);
-            Xr_eff_buf.resize(n_goss, Xr.cols());
-            X_bin_eff_buf.resize(n_goss, X_bin_r.cols());
-            for (int j = 0; j < n_goss; ++j) {
-                const int si = sorted_idx_buf[j];
-                Xr_eff_buf.row(j) = Xr.row(si);
-                X_bin_eff_buf.row(j) = X_bin_r.row(si);
-                grads_eff_buf[j] = (j >= n_top) ? grads[si] * upweight : grads[si];
-            }
-            using_goss = true;
-        }
-
-        const auto& Xr_build    = using_goss ? Xr_eff_buf : Xr;
-        const auto& grads_build = using_goss ? grads_eff_buf : grads;
-        const auto& Xbin_build  = using_goss ? X_bin_eff_buf : X_bin_r;
-
         // Build tree config for the GBT weak learner.
         hvrt::HVRTConfig tcfg;
         tcfg.n_partitions     = 2 * (1 << cfg_.max_depth);
@@ -1285,7 +1287,7 @@ void GeoXGBBase::fit_boosting(
 
         // Inject pre-computed bin edges so build() skips the O(n·d·log n) sort.
         wl.tree.inject_bin_edges(gbt_bin_edges_, cont_cols_full_, cfg_.n_bins);
-        wl.tree.build(Xr_build, Xbin_build, cont_cols_full_, {}, grads_build, tcfg);
+        wl.tree.build(Xr, X_bin_r, cont_cols_full_, {}, grads, tcfg);
 
         // ── Predict stride: defer full-dataset predict ─────────────────────
         // Full-dataset predict (K08) is only needed at refit boundaries for
@@ -1423,9 +1425,10 @@ std::vector<uint8_t> GeoXGBBase::to_bytes() const {
     w.i(cfg_.sample_block_n);   w.bo(cfg_.leave_last_block_out);
     w.s(cfg_.loss);             w.d(cfg_.convergence_tol);  w.d(cfg_.pos_class_weight);
     w.d(cfg_.e3_target_lambda); w.d(cfg_.lazy_refit_tol);   w.bo(cfg_.fixed_geometry);
-    w.bo(cfg_.progressive_expand); w.bo(cfg_.fast_refit);
-    w.d(cfg_.colsample_bytree); w.d(cfg_.goss_alpha);       w.d(cfg_.goss_beta);
+    w.bo(cfg_.progressive_expand); w.bo(false); // removed: fast_refit (compat slot)
+    w.d(cfg_.colsample_bytree); w.d(0.0); w.d(0.0); // removed: goss_alpha, goss_beta (compat slots)
     w.i(cfg_.predict_stride);   w.d(cfg_.grad_budget_weight);
+    w.bo(cfg_.sample_without_replacement);
     w.i(cfg_.random_state);     w.bo(cfg_.variance_weighted);
 
     // ── Scalars ──────────────────────────────────────────────────────────────
@@ -1478,9 +1481,10 @@ void GeoXGBBase::from_bytes(const std::vector<uint8_t>& data) {
     cfg_.sample_block_n     = r.i();  cfg_.leave_last_block_out    = r.bo();
     cfg_.loss               = r.s();  cfg_.convergence_tol    = r.d();  cfg_.pos_class_weight   = r.d();
     cfg_.e3_target_lambda   = r.d();  cfg_.lazy_refit_tol     = r.d();  cfg_.fixed_geometry     = r.bo();
-    cfg_.progressive_expand = r.bo(); cfg_.fast_refit         = r.bo();
-    cfg_.colsample_bytree   = r.d();  cfg_.goss_alpha         = r.d();  cfg_.goss_beta          = r.d();
+    cfg_.progressive_expand = r.bo(); r.bo(); // removed: fast_refit (compat slot)
+    cfg_.colsample_bytree   = r.d();  r.d(); r.d(); // removed: goss_alpha, goss_beta (compat slots)
     cfg_.predict_stride     = r.i();  cfg_.grad_budget_weight = r.d();
+    cfg_.sample_without_replacement = r.bo();
     cfg_.random_state       = r.i();  cfg_.variance_weighted  = r.bo();
 
     // ── Scalars ──────────────────────────────────────────────────────────────
