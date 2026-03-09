@@ -143,8 +143,12 @@ def compute_contributions(
     test_leaves = np.asarray(cpp.apply(X))                       # (n,)
     X_z_query   = np.asarray(cpp.to_z(X))                        # (n, d)
 
-    X_z_train   = np.asarray(cpp.X_z())            # (n_train, d)
-    part_ids    = np.asarray(cpp.partition_ids())   # (n_train,)
+    # Use full training data for local models (X_z/partition_ids are from the
+    # HVRT reduced set and may be shorter than train_predictions which covers
+    # the full training set).
+    X_full = model._X_train                                     # (n_full, d_orig)
+    X_z_train   = np.asarray(cpp.to_z(X_full))                  # (n_full, d)
+    part_ids    = np.asarray(cpp.apply(X_full))                  # (n_full,)
 
     # Get training predictions (scalar or per-class slice)
     mc = getattr(model, '_mc_cpp_model', None)

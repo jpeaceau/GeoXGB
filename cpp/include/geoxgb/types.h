@@ -151,6 +151,10 @@ struct GeoXGBConfig {
     // 0.0 = disabled (standard size-proportional budgets).  Range [0, 1].
     double grad_budget_weight = 0.0;
 
+    // Partition trajectory: record partition IDs for all training samples
+    // at each HVRT refit.  Enables geometric fingerprint / stability analysis.
+    bool   track_partition_trajectory = true;
+
     // Misc
     int    random_state       = 42;
     bool   variance_weighted  = true;

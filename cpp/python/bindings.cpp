@@ -70,6 +70,7 @@ PYBIND11_MODULE(_geoxgb_cpp, m) {
         .def_readwrite("colsample_bytree",     &GeoXGBConfig::colsample_bytree)
         .def_readwrite("predict_stride",       &GeoXGBConfig::predict_stride)
         .def_readwrite("grad_budget_weight",   &GeoXGBConfig::grad_budget_weight)
+        .def_readwrite("track_partition_trajectory", &GeoXGBConfig::track_partition_trajectory)
         .def("__repr__", [](const GeoXGBConfig& c) {
             return "<GeoXGBConfig n_rounds=" + std::to_string(c.n_rounds) +
                    " lr=" + std::to_string(c.learning_rate) +
@@ -122,6 +123,9 @@ PYBIND11_MODULE(_geoxgb_cpp, m) {
         .def("init_noise_modulation", &GeoXGBRegressor::init_noise_modulation)
         .def("n_train",              &GeoXGBRegressor::n_train)
         .def("n_init_reduced",       &GeoXGBRegressor::n_init_reduced)
+        .def("partition_trajectory", [](const GeoXGBRegressor& m) {
+            return m.partition_trajectory();
+        }, "Per-refit partition IDs for all training samples. List of VectorXi.")
         .def("__repr__", [](const GeoXGBRegressor& r) {
             return std::string("<CppGeoXGBRegressor fitted=") +
                    (r.is_fitted() ? "True" : "False") + ">";
@@ -198,6 +202,8 @@ PYBIND11_MODULE(_geoxgb_cpp, m) {
         .def("init_noise_modulation", &GeoXGBClassifier::init_noise_modulation)
         .def("n_train",              &GeoXGBClassifier::n_train)
         .def("n_init_reduced",       &GeoXGBClassifier::n_init_reduced)
+        .def("partition_trajectory", [](const GeoXGBClassifier& m) {
+            return m.partition_trajectory(); })
         .def("__repr__", [](const GeoXGBClassifier& c) {
             return std::string("<CppGeoXGBClassifier fitted=") +
                    (c.is_fitted() ? "True" : "False") + ">";
@@ -273,6 +279,8 @@ PYBIND11_MODULE(_geoxgb_cpp, m) {
         .def("init_noise_modulation", &GeoXGBGiniClassifier::init_noise_modulation)
         .def("n_train",              &GeoXGBGiniClassifier::n_train)
         .def("n_init_reduced",       &GeoXGBGiniClassifier::n_init_reduced)
+        .def("partition_trajectory", [](const GeoXGBGiniClassifier& m) {
+            return m.partition_trajectory(); })
         .def("__repr__", [](const GeoXGBGiniClassifier& c) {
             return std::string("<CppGeoXGBGiniClassifier fitted=") +
                    (c.is_fitted() ? "True" : "False") + ">";
@@ -339,6 +347,8 @@ PYBIND11_MODULE(_geoxgb_cpp, m) {
         .def("init_noise_modulation", &GeoXGBFocalClassifier::init_noise_modulation)
         .def("n_train",              &GeoXGBFocalClassifier::n_train)
         .def("n_init_reduced",       &GeoXGBFocalClassifier::n_init_reduced)
+        .def("partition_trajectory", [](const GeoXGBFocalClassifier& m) {
+            return m.partition_trajectory(); })
         .def("__repr__", [](const GeoXGBFocalClassifier& c) {
             return std::string("<CppGeoXGBFocalClassifier fitted=") +
                    (c.is_fitted() ? "True" : "False") +
@@ -412,6 +422,8 @@ PYBIND11_MODULE(_geoxgb_cpp, m) {
         .def("init_noise_modulation", &GeoXGBExpClassifier::init_noise_modulation)
         .def("n_train",              &GeoXGBExpClassifier::n_train)
         .def("n_init_reduced",       &GeoXGBExpClassifier::n_init_reduced)
+        .def("partition_trajectory", [](const GeoXGBExpClassifier& m) {
+            return m.partition_trajectory(); })
         .def("__repr__", [](const GeoXGBExpClassifier& c) {
             return std::string("<CppGeoXGBExpClassifier fitted=") +
                    (c.is_fitted() ? "True" : "False") + ">";
@@ -476,6 +488,8 @@ PYBIND11_MODULE(_geoxgb_cpp, m) {
         .def("init_noise_modulation", &GeoXGBHingeClassifier::init_noise_modulation)
         .def("n_train",              &GeoXGBHingeClassifier::n_train)
         .def("n_init_reduced",       &GeoXGBHingeClassifier::n_init_reduced)
+        .def("partition_trajectory", [](const GeoXGBHingeClassifier& m) {
+            return m.partition_trajectory(); })
         .def("__repr__", [](const GeoXGBHingeClassifier& c) {
             return std::string("<CppGeoXGBHingeClassifier fitted=") +
                    (c.is_fitted() ? "True" : "False") + ">";
@@ -550,6 +564,8 @@ PYBIND11_MODULE(_geoxgb_cpp, m) {
         .def("init_noise_modulation", &GeoXGBMulticlassClassifier::init_noise_modulation)
         .def("n_train",              &GeoXGBMulticlassClassifier::n_train)
         .def("n_init_reduced",       &GeoXGBMulticlassClassifier::n_init_reduced)
+        .def("partition_trajectory", [](const GeoXGBMulticlassClassifier& m) {
+            return m.partition_trajectory(); })
         .def("__repr__", [](const GeoXGBMulticlassClassifier& m) {
             return std::string("<CppGeoXGBMulticlassClassifier fitted=") +
                    (m.is_fitted() ? "True" : "False") +

@@ -1022,6 +1022,12 @@ void GeoXGBBase::fit_boosting(
     n_init_reduced_         = static_cast<int>(res.red_idx.size());
     int    last_n_expanded  = res.n_expanded;
 
+    // Record initial partition assignment
+    partition_trajectory_.clear();
+    if (cfg_.track_partition_trajectory && last_hvrt && last_hvrt->fitted()) {
+        partition_trajectory_.push_back(last_hvrt->apply(X_arg));
+    }
+
     init_pred_ = init_prediction(yr);
 
     Eigen::VectorXd preds       = Eigen::VectorXd::Constant(Xr.rows(), init_pred_);
@@ -1146,7 +1152,11 @@ void GeoXGBBase::fit_boosting(
                     red_idx         = new_res.red_idx;
                     last_n_expanded = new_res.n_expanded;
                     xr_changed      = true;
-                    // last_hvrt already points to the refitted HVRT (updated in-place)
+
+                    // Record partition snapshot
+                    if (cfg_.track_partition_trajectory && last_hvrt && last_hvrt->fitted()) {
+                        partition_trajectory_.push_back(last_hvrt->apply(X_arg));
+                    }
 
                     sync_preds(new_res.n_expanded);
                     // Reconstruct yr: regression adds, classifier subclass overrides

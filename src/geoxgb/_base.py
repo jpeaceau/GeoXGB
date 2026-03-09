@@ -55,6 +55,7 @@ class _GeoXGBBase:
         "sample_without_replacement",
         "colsample_bytree", "predict_stride",
         "grad_budget_weight",
+        "track_partition_trajectory",
     )
 
     _is_classifier = False
@@ -103,6 +104,7 @@ class _GeoXGBBase:
         colsample_bytree=1.0,
         predict_stride=1,
         grad_budget_weight=0.0,
+        track_partition_trajectory=True,
     ):
         self.n_rounds = n_rounds
         self.learning_rate = learning_rate
@@ -146,6 +148,7 @@ class _GeoXGBBase:
         self.colsample_bytree = colsample_bytree
         self.predict_stride = predict_stride
         self.grad_budget_weight = grad_budget_weight
+        self.track_partition_trajectory = track_partition_trajectory
 
         # Fitted state
         self._is_fitted = False
@@ -367,6 +370,20 @@ class _GeoXGBBase:
             "feature_names": list(feature_names),
             "partitioner":   self.partitioner,
         }
+
+    def partition_trajectory(self):
+        """
+        Partition IDs for all training samples at each HVRT refit.
+
+        Returns a list of arrays, one per refit snapshot (including the
+        initial partition at round 0).  Each array has shape ``(n_train,)``
+        with integer partition IDs.
+
+        Only available when ``track_partition_trajectory=True`` (default).
+        """
+        cpp, _ = self._get_geometry()
+        traj = cpp.partition_trajectory()
+        return [np.asarray(t) for t in traj]
 
     def cooperation_score(self, X):
         """

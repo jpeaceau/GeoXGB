@@ -53,10 +53,17 @@ public:
     const std::vector<double>& rho_trace()    const { return rho_trace_; }
     const std::vector<double>& yw_eff_trace() const { return yw_eff_trace_; }
 
+    // Partition trajectory: partition IDs for all training samples at each refit.
+    // partition_trajectory_[k] = VectorXi of length n_train, for refit k.
+    // Includes round 0 (initial partition) and each subsequent refit.
+    const std::vector<Eigen::VectorXi>& partition_trajectory() const {
+        return partition_trajectory_;
+    }
+
     // ── Geometry / interpretability accessors ─────────────────────────────────
     // Populated at the end of fit_boosting() from the most recent HVRT geometry.
-    // X_z(): whitened training data (full X, not just reduced).
-    // partition_ids(): per-sample HVRT partition assignment.
+    // X_z(): whitened HVRT reduced/augmented working set (not full training X).
+    // partition_ids(): HVRT partition assignment for the reduced set.
     // train_predictions(): ensemble raw predictions on full training X.
     // to_z(): whiten new query points using the same whitener.
     // apply(): assign new query points to partition IDs.
@@ -101,6 +108,7 @@ protected:
     std::vector<double> rho_trace_;     // |ρ(geom, residuals)| at each refit
     std::vector<double> yw_eff_trace_;  // effective y_weight used at each refit
     std::vector<double> convergence_losses_;  // mean |grad| at each refit boundary
+    std::vector<Eigen::VectorXi> partition_trajectory_;  // per-refit partition IDs for all samples
 
 private:
     // ── Per-tree state ────────────────────────────────────────────────────────

@@ -9,11 +9,17 @@ Each wrapper provides a uniform interface:
     .save(path) -> None  (serialize fitted model for later inspection)
 """
 from __future__ import annotations
+import os
 import time
 import warnings
 from pathlib import Path
 
 import numpy as np
+
+
+def _get_njobs() -> int:
+    """Get thread budget set by the runner (or all cores if unset)."""
+    return int(os.environ.get("GEOXGB_BENCH_NJOBS", os.cpu_count() or 4))
 
 
 # ---------------------------------------------------------------------------
@@ -23,17 +29,18 @@ import numpy as np
 class GeoXGBDefaultModel:
     name = "geoxgb_default"
 
-    def __init__(self, task: str):
+    def __init__(self, task: str, random_state: int = 42):
         self.task = task
+        self.random_state = random_state
         self.model_ = None
         self.fit_time_ = 0.0
 
     def fit(self, X, y):
         from geoxgb import GeoXGBRegressor, GeoXGBClassifier
         if self.task == "regression":
-            self.model_ = GeoXGBRegressor(random_state=42)
+            self.model_ = GeoXGBRegressor(random_state=self.random_state)
         else:
-            self.model_ = GeoXGBClassifier(random_state=42)
+            self.model_ = GeoXGBClassifier(random_state=self.random_state)
         with warnings.catch_warnings():
             warnings.simplefilter("ignore")
             t0 = time.perf_counter()
@@ -55,9 +62,10 @@ class GeoXGBDefaultModel:
 class GeoXGBHPOModel:
     name = "geoxgb_hpo"
 
-    def __init__(self, task: str, n_trials: int = 50):
+    def __init__(self, task: str, n_trials: int = 50, random_state: int = 42):
         self.task = task
         self.n_trials = n_trials
+        self.random_state = random_state
         self.model_ = None
         self.optimizer_ = None
         self.fit_time_ = 0.0
@@ -67,7 +75,7 @@ class GeoXGBHPOModel:
         opt_task = "regression" if self.task == "regression" else "classification"
         self.optimizer_ = GeoXGBOptimizer(
             task=opt_task, n_trials=self.n_trials, cv=3,
-            random_state=42, verbose=False,
+            random_state=self.random_state, verbose=False,
         )
         with warnings.catch_warnings():
             warnings.simplefilter("ignore")
@@ -102,8 +110,9 @@ class GeoXGBHPOModel:
 class XGBoostDefaultModel:
     name = "xgboost_default"
 
-    def __init__(self, task: str):
+    def __init__(self, task: str, random_state: int = 42):
         self.task = task
+        self.random_state = random_state
         self.model_ = None
         self.fit_time_ = 0.0
 
@@ -111,16 +120,16 @@ class XGBoostDefaultModel:
         import xgboost as xgb
         if self.task == "regression":
             self.model_ = xgb.XGBRegressor(
-                random_state=42, n_jobs=1, verbosity=0,
+                random_state=self.random_state, n_jobs=_get_njobs(), verbosity=0,
             )
         elif self.task == "binary":
             self.model_ = xgb.XGBClassifier(
-                random_state=42, n_jobs=1, verbosity=0,
+                random_state=self.random_state, n_jobs=_get_njobs(), verbosity=0,
                 eval_metric="logloss",
             )
         else:
             self.model_ = xgb.XGBClassifier(
-                random_state=42, n_jobs=1, verbosity=0,
+                random_state=self.random_state, n_jobs=_get_njobs(), verbosity=0,
                 eval_metric="mlogloss",
             )
         t0 = time.perf_counter()
@@ -143,7 +152,7 @@ class XGBoostHPOModel:
     name = "xgboost_hpo"
 
     _SEARCH_SPACE = {
-        "n_estimators": [100, 300, 500, 1000, 2000],
+        "n_estimators": [100, 300, 500, 1000],
         "learning_rate": [0.01, 0.03, 0.05, 0.1, 0.2, 0.3],
         "max_depth": [3, 4, 5, 6, 7, 8],
         "subsample": [0.6, 0.7, 0.8, 0.9, 1.0],
@@ -153,9 +162,10 @@ class XGBoostHPOModel:
         "reg_lambda": [0.1, 1.0, 5.0, 10.0],
     }
 
-    def __init__(self, task: str, n_trials: int = 50):
+    def __init__(self, task: str, n_trials: int = 50, random_state: int = 42):
         self.task = task
         self.n_trials = n_trials
+        self.random_state = random_state
         self.model_ = None
         self.best_params_ = None
         self.best_score_ = None
@@ -169,26 +179,27 @@ class XGBoostHPOModel:
         optuna.logging.set_verbosity(optuna.logging.WARNING)
 
         is_clf = self.task != "regression"
+        rs = self.random_state
 
         # Subsample large datasets for HPO speed
         max_hpo = 10_000
         X_hpo, y_hpo = X, y
         if len(X) > max_hpo:
-            rng = np.random.RandomState(42)
+            rng = np.random.RandomState(rs)
             if is_clf:
                 from sklearn.model_selection import train_test_split
                 X_hpo, _, y_hpo, _ = train_test_split(
-                    X, y, train_size=max_hpo, stratify=y, random_state=42,
+                    X, y, train_size=max_hpo, stratify=y, random_state=rs,
                 )
             else:
                 idx = rng.choice(len(X), max_hpo, replace=False)
                 X_hpo, y_hpo = X[idx], y[idx]
 
         if is_clf:
-            cv = StratifiedKFold(n_splits=3, shuffle=True, random_state=42)
+            cv = StratifiedKFold(n_splits=3, shuffle=True, random_state=rs)
             scoring = "roc_auc" if self.task == "binary" else "roc_auc_ovr"
         else:
-            cv = KFold(n_splits=3, shuffle=True, random_state=42)
+            cv = KFold(n_splits=3, shuffle=True, random_state=rs)
             scoring = "r2"
 
         def objective(trial):
@@ -197,15 +208,15 @@ class XGBoostHPOModel:
                 for name, choices in self._SEARCH_SPACE.items()
             }
             if self.task == "regression":
-                m = xgb.XGBRegressor(**params, random_state=42,
-                                      n_jobs=1, verbosity=0)
+                m = xgb.XGBRegressor(**params, random_state=rs,
+                                      n_jobs=_get_njobs(), verbosity=0)
             elif self.task == "binary":
-                m = xgb.XGBClassifier(**params, random_state=42,
-                                       n_jobs=1, verbosity=0,
+                m = xgb.XGBClassifier(**params, random_state=rs,
+                                       n_jobs=_get_njobs(), verbosity=0,
                                        eval_metric="logloss")
             else:
-                m = xgb.XGBClassifier(**params, random_state=42,
-                                       n_jobs=1, verbosity=0,
+                m = xgb.XGBClassifier(**params, random_state=rs,
+                                       n_jobs=_get_njobs(), verbosity=0,
                                        eval_metric="mlogloss")
             with warnings.catch_warnings():
                 warnings.simplefilter("ignore")
@@ -213,7 +224,7 @@ class XGBoostHPOModel:
                                           scoring=scoring, error_score="raise")
             return float(np.mean(scores))
 
-        sampler = optuna.samplers.TPESampler(seed=42)
+        sampler = optuna.samplers.TPESampler(seed=rs)
         study = optuna.create_study(direction="maximize", sampler=sampler)
 
         t0 = time.perf_counter()
@@ -224,15 +235,15 @@ class XGBoostHPOModel:
 
         # Refit on full data
         if self.task == "regression":
-            self.model_ = xgb.XGBRegressor(**self.best_params_, random_state=42,
-                                            n_jobs=1, verbosity=0)
+            self.model_ = xgb.XGBRegressor(**self.best_params_, random_state=rs,
+                                            n_jobs=_get_njobs(), verbosity=0)
         elif self.task == "binary":
-            self.model_ = xgb.XGBClassifier(**self.best_params_, random_state=42,
-                                             n_jobs=1, verbosity=0,
+            self.model_ = xgb.XGBClassifier(**self.best_params_, random_state=rs,
+                                             n_jobs=_get_njobs(), verbosity=0,
                                              eval_metric="logloss")
         else:
-            self.model_ = xgb.XGBClassifier(**self.best_params_, random_state=42,
-                                             n_jobs=1, verbosity=0,
+            self.model_ = xgb.XGBClassifier(**self.best_params_, random_state=rs,
+                                             n_jobs=_get_njobs(), verbosity=0,
                                              eval_metric="mlogloss")
         self.model_.fit(X, y)
         self.fit_time_ = time.perf_counter() - t0
@@ -259,14 +270,19 @@ class XGBoostHPOModel:
 # Factory
 # ---------------------------------------------------------------------------
 
-def get_models(mode: str, task: str, n_trials: int = 50) -> list:
+def get_models(mode: str, task: str, n_trials: int = 50,
+               random_state: int = 42) -> list:
     """Return model wrappers for the given mode and task."""
     if mode == "default":
-        return [GeoXGBDefaultModel(task), XGBoostDefaultModel(task)]
+        return [GeoXGBDefaultModel(task, random_state),
+                XGBoostDefaultModel(task, random_state)]
     elif mode == "hpo":
-        return [GeoXGBHPOModel(task, n_trials), XGBoostHPOModel(task, n_trials)]
+        return [GeoXGBHPOModel(task, n_trials, random_state),
+                XGBoostHPOModel(task, n_trials, random_state)]
     else:
         return [
-            GeoXGBDefaultModel(task), XGBoostDefaultModel(task),
-            GeoXGBHPOModel(task, n_trials), XGBoostHPOModel(task, n_trials),
+            GeoXGBDefaultModel(task, random_state),
+            XGBoostDefaultModel(task, random_state),
+            GeoXGBHPOModel(task, n_trials, random_state),
+            XGBoostHPOModel(task, n_trials, random_state),
         ]

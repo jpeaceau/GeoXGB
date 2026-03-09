@@ -134,6 +134,7 @@ class GeoXGBRegressor(_GeoXGBBase):
         colsample_bytree=1.0,
         predict_stride=1,
         grad_budget_weight=0.0,
+        track_partition_trajectory=True,
     ):
         if loss not in ('squared_error', 'absolute_error'):
             raise ValueError(
@@ -183,6 +184,7 @@ class GeoXGBRegressor(_GeoXGBBase):
             colsample_bytree=colsample_bytree,
             predict_stride=predict_stride,
             grad_budget_weight=grad_budget_weight,
+            track_partition_trajectory=track_partition_trajectory,
         )
 
     def fit(self, X, y, feature_types=None):

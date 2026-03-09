@@ -84,6 +84,7 @@ _PYTHON_TO_CPP = {
     "colsample_bytree":      "colsample_bytree",
     "predict_stride":        "predict_stride",
     "grad_budget_weight":    "grad_budget_weight",
+    "track_partition_trajectory": "track_partition_trajectory",
 }
 
 

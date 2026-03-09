@@ -1,8 +1,8 @@
 """
 Main benchmark runner.
 
-Default mode: 5-fold CV per dataset, evaluate both models on each fold.
-HPO mode: 5 random 80/20 train/test splits, run HPO on train, evaluate on test.
+Default mode: 3-fold CV per dataset, evaluate both models on each fold.
+HPO mode: 3 seeds × 80/20 train/test splits, run HPO on train, evaluate on test.
 
 All results are written to CSV with full traceability (category, dataset, model,
 seed/fold, all metrics, timing, and any errors).
@@ -68,7 +68,7 @@ def _evaluate_fold(model, X_train, y_train, X_test, y_test, task: str):
 # ---------------------------------------------------------------------------
 
 def run_default_single(ds: dict, save_models: bool = False) -> list[dict]:
-    """Run 5-fold CV for one dataset, both models. Returns list of row dicts."""
+    """Run N-fold CV for one dataset, both models. Returns list of row dicts."""
     log.info("DEFAULT | %s [%s] — loading data", ds["name"], ds["category"])
     X, y = ds["loader"]()
     X = np.asarray(X, dtype=np.float64)
@@ -77,13 +77,14 @@ def run_default_single(ds: dict, save_models: bool = False) -> list[dict]:
     log.info("  n=%d, d=%d, task=%s", n, d, ds["task"])
 
     task = ds["task"]
-    models = get_models("default", task)
+    seed = SEEDS[0]
+    models = get_models("default", task, random_state=seed)
 
     if task == "regression":
-        kf = KFold(n_splits=N_FOLDS, shuffle=True, random_state=SEEDS[0])
+        kf = KFold(n_splits=N_FOLDS, shuffle=True, random_state=seed)
         splits = list(kf.split(X))
     else:
-        kf = StratifiedKFold(n_splits=N_FOLDS, shuffle=True, random_state=SEEDS[0])
+        kf = StratifiedKFold(n_splits=N_FOLDS, shuffle=True, random_state=seed)
         splits = list(kf.split(X, y))
 
     rows = []
@@ -140,7 +141,7 @@ def run_default_single(ds: dict, save_models: bool = False) -> list[dict]:
 # ---------------------------------------------------------------------------
 
 def run_hpo_single(ds: dict, save_models: bool = False) -> list[dict]:
-    """Run HPO for one dataset across 5 seeds. Returns list of row dicts."""
+    """Run HPO for one dataset across all seeds. Returns list of row dicts."""
     log.info("HPO | %s [%s] — loading data", ds["name"], ds["category"])
     X, y = ds["loader"]()
     X = np.asarray(X, dtype=np.float64)
@@ -152,7 +153,7 @@ def run_hpo_single(ds: dict, save_models: bool = False) -> list[dict]:
 
     rows = []
     for seed in SEEDS:
-        models = get_models("hpo", task, n_trials=n_trials)
+        models = get_models("hpo", task, n_trials=n_trials, random_state=seed)
 
         # Stratified split for classification
         if task == "regression":
@@ -221,8 +222,22 @@ def run_hpo_single(ds: dict, save_models: bool = False) -> list[dict]:
 # Main entry point
 # ---------------------------------------------------------------------------
 
-def _run_dataset_task(ds: dict, m: str, save_models: bool) -> list[dict]:
+def _run_dataset_task(ds_name: str, m: str, save_models: bool,
+                      threads_per_worker: int | None = None) -> list[dict]:
     """Worker function for parallel execution. Runs one dataset in one mode."""
+    import os
+    if threads_per_worker is not None:
+        # Divide cores evenly: limit OpenMP (GeoXGB) and XGBoost thread pools
+        os.environ["OMP_NUM_THREADS"] = str(threads_per_worker)
+        os.environ["OPENBLAS_NUM_THREADS"] = str(threads_per_worker)
+        os.environ["MKL_NUM_THREADS"] = str(threads_per_worker)
+        # Store for model wrappers to pick up
+        os.environ["GEOXGB_BENCH_NJOBS"] = str(threads_per_worker)
+    # Look up dataset by name in this process (avoids lambda pickling issues)
+    matches = [d for d in DATASETS if d["name"] == ds_name]
+    if not matches:
+        raise ValueError(f"Dataset not found: {ds_name}")
+    ds = matches[0]
     t0 = time.perf_counter()
     if m == "default":
         rows = run_default_single(ds, save_models=save_models)
@@ -271,23 +286,49 @@ def run(mode: str = "default",
     all_rows = []
     modes = ["default", "hpo"] if mode == "all" else [mode]
 
+    # Determine output path once (used for incremental writes)
+    if output:
+        out_path = Path(output)
+    else:
+        out_path = RESULTS_DIR / f"{mode}_results.csv"
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+
+    # Compute threads per worker to avoid oversubscription.
+    # Each worker gets total_cores / workers threads for OpenMP + XGBoost.
+    import os
+    total_cores = os.cpu_count() or 4
+    threads_per_worker = max(1, total_cores // max(workers, 1))
+    log.info("CPU cores: %d, threads per worker: %d", total_cores, threads_per_worker)
+
+    def _flush_rows(rows: list[dict]):
+        """Append new rows to the global CSV after each dataset completes."""
+        all_rows.extend(rows)
+        df = pd.DataFrame(all_rows)
+        df.to_csv(out_path, index=False)
+
     if workers <= 1:
-        # Sequential (original behaviour)
+        # Sequential — give this process all cores
+        os.environ["OMP_NUM_THREADS"] = str(total_cores)
+        os.environ["GEOXGB_BENCH_NJOBS"] = str(total_cores)
         for m in modes:
             log.info("-" * 70)
             log.info("Starting mode: %s", m)
             log.info("-" * 70)
             for i, ds in enumerate(datasets, 1):
                 log.info("[%d/%d] %s", i, n_datasets, ds["name"])
-                all_rows.extend(_run_dataset_task(ds, m, save_models))
+                rows = _run_dataset_task(ds["name"], m, save_models)
+                _flush_rows(rows)
+                log.info("  Results saved (%d total rows in %s)", len(all_rows), out_path.name)
     else:
-        # Parallel across datasets
-        tasks = [(ds, m) for m in modes for ds in datasets]
-        log.info("Submitting %d tasks to %d workers", len(tasks), workers)
+        # Parallel across datasets — divide cores evenly
+        tasks = [(ds["name"], m) for m in modes for ds in datasets]
+        log.info("Submitting %d tasks to %d workers (%d threads each)",
+                 len(tasks), workers, threads_per_worker)
         with ProcessPoolExecutor(max_workers=workers) as pool:
             futures = {
-                pool.submit(_run_dataset_task, ds, m, save_models): (ds["name"], m)
-                for ds, m in tasks
+                pool.submit(_run_dataset_task, name, m, save_models,
+                            threads_per_worker): (name, m)
+                for name, m in tasks
             }
             done_count = 0
             for future in as_completed(futures):
@@ -295,24 +336,21 @@ def run(mode: str = "default",
                 name, m = futures[future]
                 try:
                     rows = future.result()
-                    all_rows.extend(rows)
-                    log.info("[%d/%d] %s (%s) done", done_count, len(tasks), name, m)
+                    _flush_rows(rows)
+                    log.info("[%d/%d] %s (%s) done — %d total rows saved",
+                             done_count, len(tasks), name, m, len(all_rows))
                 except Exception as e:
                     log.error("[%d/%d] %s (%s) FAILED: %s",
                               done_count, len(tasks), name, m, e)
 
-    # Write results
-    df = pd.DataFrame(all_rows)
-    if output:
-        out_path = Path(output)
-    else:
-        out_path = RESULTS_DIR / f"{mode}_results.csv"
-    out_path.parent.mkdir(parents=True, exist_ok=True)
-    df.to_csv(out_path, index=False)
-    log.info("Results written to %s (%d rows)", out_path, len(df))
+    log.info("Final results: %s (%d rows)", out_path, len(all_rows))
 
     # Print summary
-    _print_summary(df)
+    df = pd.DataFrame(all_rows)
+    if len(df) > 0:
+        _print_summary(df)
+    else:
+        log.warning("No results to summarize.")
     return df
 
 

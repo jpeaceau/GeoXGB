@@ -1,23 +1,25 @@
 """Global configuration for the benchmarking suite."""
 from pathlib import Path
 
-# 5 seeds for reproducible CV / train-test splits
-SEEDS = [42, 123, 456, 789, 1337]
+# Seeds for reproducible train-test splits (HPO already does 3-fold CV internally)
+SEEDS = [42]
 
 # Cross-validation folds (default mode)
-N_FOLDS = 5
+N_FOLDS = 3
 
 # HPO settings
-HPO_TRIALS_GEOXGB = 50
-HPO_TRIALS_XGBOOST = 50
+HPO_TRIALS_GEOXGB = 30
+HPO_TRIALS_XGBOOST = 30
 HPO_CV = 3
 
 # Tiered HPO budget by dataset size
-def hpo_trials_for_n(n: int, base: int = 50) -> int:
+def hpo_trials_for_n(n: int, base: int = 30) -> int:
+    if n >= 50_000:
+        return 8
     if n >= 10_000:
-        return max(base // 3, 15)
+        return max(base // 3, 10)
     if n >= 2_000:
-        return max(base * 2 // 3, 30)
+        return max(base * 2 // 3, 20)
     return base
 
 # Output directory
