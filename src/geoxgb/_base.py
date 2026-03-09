@@ -86,6 +86,7 @@ class _GeoXGBBase:
         hvrt_params=None,
         partitioner='hvrt',
         adaptive_reduce_ratio=False,
+        single_pass=False,
         sample_block_n='auto',
         n_bins=64,
         max_resample_n=None,
@@ -104,6 +105,7 @@ class _GeoXGBBase:
         self.min_samples_leaf = min_samples_leaf
         self.n_partitions = n_partitions
         self.hvrt_min_samples_leaf = hvrt_min_samples_leaf
+        self.single_pass = single_pass
         self.reduce_ratio = reduce_ratio
         self.expand_ratio = expand_ratio
         self.y_weight = y_weight
@@ -148,6 +150,26 @@ class _GeoXGBBase:
         self._X_train = None          # encoded training X (for interpretability)
         self._cpp_model = None        # CppGeoXGBRegressor / CppGeoXGBClassifier
         self.convergence_round_ = None
+
+    def _resolve_params(self, n_samples):
+        """Build C++ param dict, resolving single_pass and sample_block_n."""
+        params = {k: getattr(self, k) for k in self._PARAM_NAMES if hasattr(self, k)}
+
+        # Single-pass mode: compute reduce_ratio so each sample is seen at
+        # most once across all refit cycles.  n_refits * n_keep <= n  implies
+        # reduce_ratio <= refit_interval / n_rounds.  Floor ensures at least
+        # 5 samples per batch for tree quality.
+        if self.single_pass:
+            ri = max(1, self.refit_interval or 1)
+            sp_ratio = ri / max(1, self.n_rounds)
+            min_ratio = max(5.0 / n_samples, 0.002)
+            params['reduce_ratio'] = max(sp_ratio, min_ratio)
+
+        if params.get('sample_block_n') == 'auto':
+            params['sample_block_n'] = _resolve_auto_block(
+                n_samples, self.refit_interval, self.n_rounds,
+            )
+        return params
 
     # ------------------------------------------------------------------
     # Categorical encoding

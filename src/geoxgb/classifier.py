@@ -111,11 +111,7 @@ class GeoXGBGiniClassifier(_GeoXGBBase):
         from geoxgb._cpp_backend import make_cpp_config
         from geoxgb._cpp_backend import CppGeoXGBGiniClassifier as _CppGini
 
-        params = {k: getattr(self, k) for k in self._PARAM_NAMES if hasattr(self, k)}
-        if params.get('sample_block_n') == 'auto':
-            params['sample_block_n'] = _resolve_auto_block(
-                len(X), self.refit_interval, self.n_rounds,
-            )
+        params = self._resolve_params(len(X))
         if self._class_weights is not None:
             params['pos_class_weight'] = float(self._class_weights[1])
         self._cpp_model = _CppGini(make_cpp_config(**params))
@@ -210,11 +206,7 @@ class GeoXGBFocalClassifier(_GeoXGBBase):
         from geoxgb._cpp_backend import make_cpp_config
         from geoxgb._cpp_backend import CppGeoXGBFocalClassifier as _CppFocal
 
-        params = {k: getattr(self, k) for k in self._PARAM_NAMES if hasattr(self, k)}
-        if params.get('sample_block_n') == 'auto':
-            params['sample_block_n'] = _resolve_auto_block(
-                len(X), self.refit_interval, self.n_rounds,
-            )
+        params = self._resolve_params(len(X))
         if self._class_weights is not None:
             params['pos_class_weight'] = float(self._class_weights[1])
         self._cpp_model = _CppFocal(make_cpp_config(**params), self.gamma)
@@ -303,11 +295,7 @@ class GeoXGBExpClassifier(_GeoXGBBase):
         from geoxgb._cpp_backend import make_cpp_config
         from geoxgb._cpp_backend import CppGeoXGBExpClassifier as _CppExp
 
-        params = {k: getattr(self, k) for k in self._PARAM_NAMES if hasattr(self, k)}
-        if params.get('sample_block_n') == 'auto':
-            params['sample_block_n'] = _resolve_auto_block(
-                len(X), self.refit_interval, self.n_rounds,
-            )
+        params = self._resolve_params(len(X))
         if self._class_weights is not None:
             params['pos_class_weight'] = float(self._class_weights[1])
         self._cpp_model = _CppExp(make_cpp_config(**params))
@@ -397,11 +385,7 @@ class GeoXGBHingeClassifier(_GeoXGBBase):
         from geoxgb._cpp_backend import make_cpp_config
         from geoxgb._cpp_backend import CppGeoXGBHingeClassifier as _CppHinge
 
-        params = {k: getattr(self, k) for k in self._PARAM_NAMES if hasattr(self, k)}
-        if params.get('sample_block_n') == 'auto':
-            params['sample_block_n'] = _resolve_auto_block(
-                len(X), self.refit_interval, self.n_rounds,
-            )
+        params = self._resolve_params(len(X))
         if self._class_weights is not None:
             params['pos_class_weight'] = float(self._class_weights[1])
         self._cpp_model = _CppHinge(make_cpp_config(**params))
@@ -524,11 +508,7 @@ class GeoXGBClassifier(_GeoXGBBase):
     def _fit_binary(self, X, y):
         """Single log-odds C++ ensemble for binary classification."""
         from geoxgb._cpp_backend import make_cpp_config, CppGeoXGBClassifier as _CppClf
-        params = {k: getattr(self, k) for k in self._PARAM_NAMES if hasattr(self, k)}
-        if params.get('sample_block_n') == 'auto':
-            params['sample_block_n'] = _resolve_auto_block(
-                len(X), self.refit_interval, self.n_rounds,
-            )
+        params = self._resolve_params(len(X))
         if self._class_weights is not None:
             params['pos_class_weight'] = float(self._class_weights[1])
         self._cpp_model = _CppClf(make_cpp_config(**params))
@@ -544,11 +524,7 @@ class GeoXGBClassifier(_GeoXGBBase):
         """Shared-geometry multiclass: single C++ model for all K classes."""
         from geoxgb._cpp_backend import make_cpp_config, CppGeoXGBMulticlassClassifier as _CppMC
 
-        params = {k: getattr(self, k) for k in self._PARAM_NAMES if hasattr(self, k)}
-        if params.get('sample_block_n') == 'auto':
-            params['sample_block_n'] = _resolve_auto_block(
-                len(X), self.refit_interval, self.n_rounds,
-            )
+        params = self._resolve_params(len(X))
 
         # Build one-hot Y matrix (n × K)
         K = self._n_classes

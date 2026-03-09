@@ -68,6 +68,14 @@ class GeoXGBRegressor(_GeoXGBBase):
     adaptive_reduce_ratio : bool, default=False
         Dynamically increase reduce_ratio for heavy-tailed gradients.
         Recommended with ``loss='absolute_error'``.
+    single_pass : bool, default=False
+        When True, each training sample is seen at most once across the
+        entire boosting run.  The ``reduce_ratio`` is automatically set to
+        ``refit_interval / n_rounds`` so that the total samples consumed
+        across all refit cycles equals the training set size.  This makes
+        memorization physically impossible and provides strong robustness
+        to label noise and data drift.  Requires tuning ``refit_interval``
+        to control batch size: fewer refits → larger batches per cycle.
     sample_block_n : int, 'auto', or None, default='auto'
         Block size for epoch-based data cycling.  When active and n > block size,
         the full dataset is divided into non-overlapping blocks (deterministic
@@ -109,6 +117,7 @@ class GeoXGBRegressor(_GeoXGBBase):
         hvrt_params=None,
         partitioner='hvrt',
         adaptive_reduce_ratio=False,
+        single_pass=False,
         sample_block_n='auto',
         n_bins=64,
         max_resample_n=None,
@@ -150,6 +159,7 @@ class GeoXGBRegressor(_GeoXGBBase):
             hvrt_params=hvrt_params,
             partitioner=partitioner,
             adaptive_reduce_ratio=adaptive_reduce_ratio,
+            single_pass=single_pass,
             sample_block_n=sample_block_n,
             n_bins=n_bins,
             max_resample_n=max_resample_n,
@@ -186,12 +196,8 @@ class GeoXGBRegressor(_GeoXGBBase):
         self._feature_types = feature_types
         X = self._encode_features(X, feature_types, fitting=True)
 
-        params = {k: getattr(self, k) for k in self._PARAM_NAMES if hasattr(self, k)}
+        params = self._resolve_params(len(X))
         params['loss'] = self.loss
-        if params.get('sample_block_n') == 'auto':
-            params['sample_block_n'] = _resolve_auto_block(
-                len(X), self.refit_interval, self.n_rounds,
-            )
         self._cpp_model = _CppReg(make_cpp_config(**params))
         self._cpp_model.fit(X, y)
         self._X_train = X
