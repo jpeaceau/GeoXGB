@@ -137,6 +137,10 @@ def make_cpp_config(**kwargs) -> "GeoXGBConfig":
             # but guard here in case it slips through — treat as disabled.
             if py_key == 'sample_block_n' and v == 'auto':
                 continue
+            # Guard against compiled extension missing newer config fields
+            # (e.g. Docker image built from older C++ source).
+            if not hasattr(cfg, cpp_key):
+                continue
             setattr(cfg, cpp_key, v)
 
     return cfg
