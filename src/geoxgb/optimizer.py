@@ -131,7 +131,7 @@ class GeoXGBOptimizer:
         "y_weight":       0.9,
         "colsample_bytree": 1.0,
         "hvrt_min_samples_leaf": None,
-        "boost_optimizer": "standard",
+        "boost_optimizer": "partition_adaptive",
     }
 
     _SEARCH_SPACE_REGRESSION = {
@@ -163,7 +163,7 @@ class GeoXGBOptimizer:
         "colsample_bytree": 0.8,
         "class_weight":   None,
         "hvrt_min_samples_leaf": None,
-        "boost_optimizer": "standard",
+        "boost_optimizer": "partition_adaptive",
     }
 
     _SEARCH_SPACE_CLASSIFICATION = {

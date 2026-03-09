@@ -59,7 +59,120 @@ class GeoXGBDefaultModel:
         self.model_.save(str(path))
 
 
+# ---------------------------------------------------------------------------
+# GeoXGB grid-search HPO (random sampling from categorical grid)
+# ---------------------------------------------------------------------------
+
+# Shared search space — categorical lists for random grid search.
+_GEOXGB_SEARCH_SPACE_REG = {
+    "n_rounds":       [300, 500, 1000, 1500, 2000],
+    "learning_rate":  [0.01, 0.02, 0.05, 0.08, 0.1, 0.15, 0.2],
+    "max_depth":      [2, 3, 4, 5, 6],
+    "reduce_ratio":   [0.3, 0.5, 0.7, 0.8, 0.9, 0.95],
+    "refit_interval": [5, 10, 20, 50, 100],
+    "expand_ratio":   [0.0, 0.05, 0.1, 0.2, 0.3],
+    "y_weight":       [0.5, 0.7, 0.8, 0.9, 1.0],
+    "colsample_bytree": [0.7, 0.8, 0.9, 1.0],
+    "hvrt_min_samples_leaf": [None, 5, 10, 20],
+    "boost_optimizer": ["standard", "momentum", "adam", "partition_adaptive"],
+}
+
+_GEOXGB_SEARCH_SPACE_CLF = {
+    **_GEOXGB_SEARCH_SPACE_REG,
+    "boost_optimizer": ["standard", "momentum", "adam", "newton", "partition_adaptive"],
+}
+
+# Defaults for warm-start trial 0 (match constructor defaults).
+_GEOXGB_DEFAULTS_REG = {
+    "n_rounds": 500, "learning_rate": 0.05, "max_depth": 3,
+    "reduce_ratio": 0.9, "refit_interval": 10, "expand_ratio": 0.1,
+    "y_weight": 0.9, "colsample_bytree": 1.0, "hvrt_min_samples_leaf": None,
+    "boost_optimizer": "partition_adaptive",
+}
+
+_GEOXGB_DEFAULTS_CLF = {
+    "n_rounds": 1000, "learning_rate": 0.2, "max_depth": 5,
+    "reduce_ratio": 0.9, "refit_interval": 10, "expand_ratio": 0.1,
+    "y_weight": 0.7, "colsample_bytree": 0.8, "hvrt_min_samples_leaf": None,
+    "boost_optimizer": "partition_adaptive",
+}
+
+
+def _grid_search_cv(model_cls, search_space, defaults, X, y, n_trials,
+                    random_state, scorer, is_clf, fixed_params=None):
+    """Random grid search with 3-fold CV. Returns (best_params, best_score, all trials)."""
+    from sklearn.model_selection import ParameterSampler, KFold, StratifiedKFold
+
+    fixed_params = fixed_params or {}
+
+    # Subsample large datasets for HPO speed
+    max_hpo = 10_000
+    X_hpo, y_hpo = X, y
+    if len(X) > max_hpo:
+        rng = np.random.RandomState(random_state)
+        if is_clf:
+            from sklearn.model_selection import train_test_split
+            X_hpo, _, y_hpo, _ = train_test_split(
+                X, y, train_size=max_hpo, stratify=y, random_state=random_state,
+            )
+        else:
+            idx = rng.choice(len(X), max_hpo, replace=False)
+            X_hpo, y_hpo = X[idx], y[idx]
+
+    # Build CV splits
+    if is_clf:
+        kf = StratifiedKFold(n_splits=3, shuffle=True, random_state=random_state)
+        splits = list(kf.split(X_hpo, y_hpo))
+    else:
+        kf = KFold(n_splits=3, shuffle=True, random_state=random_state)
+        splits = list(kf.split(X_hpo))
+
+    # Generate trial configurations: trial 0 = defaults, rest = random samples
+    # ParameterSampler draws n_iter random combos from the grid.
+    sampled = list(ParameterSampler(search_space, n_iter=n_trials - 1,
+                                     random_state=random_state))
+    configs = [defaults] + sampled
+
+    best_score = -np.inf
+    best_params = None
+
+    for cfg in configs:
+        run_params = {
+            **cfg,
+            "random_state": random_state,
+            "convergence_tol": 0.01,
+            **fixed_params,
+        }
+        fold_scores = []
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            for tr_idx, val_idx in splits:
+                m = model_cls(**run_params)
+                m.fit(X_hpo[tr_idx], y_hpo[tr_idx])
+                fold_scores.append(scorer(m, X_hpo[val_idx], y_hpo[val_idx]))
+        mean_score = float(np.mean(fold_scores))
+        if mean_score > best_score:
+            best_score = mean_score
+            best_params = dict(cfg)
+
+    return best_params, best_score
+
+
+def _r2_scorer(model, X, y):
+    from sklearn.metrics import r2_score
+    return float(r2_score(y, model.predict(X)))
+
+
+def _auc_scorer(model, X, y):
+    from sklearn.metrics import roc_auc_score
+    proba = model.predict_proba(X)
+    if proba.shape[1] == 2:
+        return float(roc_auc_score(y, proba[:, 1]))
+    return float(roc_auc_score(y, proba, multi_class="ovr", average="macro"))
+
+
 class GeoXGBHPOModel:
+    """Grid-search HPO for GeoXGB (random sampling from categorical grid)."""
     name = "geoxgb_hpo"
 
     def __init__(self, task: str, n_trials: int = 50, random_state: int = 42):
@@ -67,37 +180,44 @@ class GeoXGBHPOModel:
         self.n_trials = n_trials
         self.random_state = random_state
         self.model_ = None
-        self.optimizer_ = None
+        self.best_params_ = None
+        self.best_score_ = None
         self.fit_time_ = 0.0
-        # Extended refit: best params + n_rounds=5000, no early stopping
         self.extended_model_ = None
         self.extended_fit_time_ = 0.0
 
     def fit(self, X, y):
-        from geoxgb import GeoXGBOptimizer, GeoXGBRegressor, GeoXGBClassifier
-        opt_task = "regression" if self.task == "regression" else "classification"
-        self.optimizer_ = GeoXGBOptimizer(
-            task=opt_task, n_trials=self.n_trials, cv=3,
-            random_state=self.random_state, verbose=False,
+        from geoxgb import GeoXGBRegressor, GeoXGBClassifier
+
+        is_clf = self.task != "regression"
+        model_cls = GeoXGBClassifier if is_clf else GeoXGBRegressor
+        scorer = _auc_scorer if is_clf else _r2_scorer
+        space = _GEOXGB_SEARCH_SPACE_CLF if is_clf else _GEOXGB_SEARCH_SPACE_REG
+        defaults = _GEOXGB_DEFAULTS_CLF if is_clf else _GEOXGB_DEFAULTS_REG
+
+        # Block cycling for large datasets
+        fixed = {}
+        if len(X) >= 5_000:
+            fixed["sample_block_n"] = "auto"
+
+        t0 = time.perf_counter()
+        self.best_params_, self.best_score_ = _grid_search_cv(
+            model_cls, space, defaults, X, y, self.n_trials,
+            self.random_state, scorer, is_clf, fixed_params=fixed,
         )
+
+        # Refit best on full data
+        best_run = {**self.best_params_, "random_state": self.random_state, **fixed}
+        self.model_ = model_cls(**best_run)
         with warnings.catch_warnings():
             warnings.simplefilter("ignore")
-            t0 = time.perf_counter()
-            self.optimizer_.fit(X, y)
-            self.fit_time_ = time.perf_counter() - t0
+            self.model_.fit(X, y)
+        self.fit_time_ = time.perf_counter() - t0
 
-        self.model_ = self.optimizer_.best_model_
-
-        # Extended refit: same best params but with n_rounds=5000 and
-        # convergence_tol disabled, so the model trains to completion.
-        model_cls = (GeoXGBClassifier if opt_task == "classification"
-                     else GeoXGBRegressor)
-        ext_params = {
-            **self.optimizer_.best_params_,
-            "n_rounds": 5000,
-            "convergence_tol": None,
-            "random_state": self.random_state,
-        }
+        # Extended refit: n_rounds=5000, no early stopping
+        ext_params = {**self.best_params_, "n_rounds": 5000,
+                      "convergence_tol": None, "random_state": self.random_state,
+                      **fixed}
         self.extended_model_ = model_cls(**ext_params)
         with warnings.catch_warnings():
             warnings.simplefilter("ignore")
@@ -108,20 +228,109 @@ class GeoXGBHPOModel:
         return self
 
     def predict(self, X):
-        return self.optimizer_.predict(X)
+        return self.model_.predict(X)
 
     def predict_proba(self, X):
-        return self.optimizer_.predict_proba(X)
+        return self.model_.predict_proba(X)
 
     def save(self, path: Path):
         path.parent.mkdir(parents=True, exist_ok=True)
         self.model_.save(str(path))
-        # Save HPO metadata alongside
         import json
         meta_path = path.with_suffix(".meta.json")
         with open(meta_path, "w") as f:
-            json.dump({"best_params": self.optimizer_.best_params_,
-                        "best_score": self.optimizer_.best_score_}, f, indent=2,
+            json.dump({"best_params": self.best_params_,
+                        "best_score": self.best_score_}, f, indent=2,
+                       default=str)
+
+
+class GeoXGBSinglePassHPOModel:
+    """Grid-search HPO for GeoXGB with single_pass=True (forward-pass mode)."""
+    name = "geoxgb_hpo_single_pass"
+
+    # Single-pass search space: reduce_ratio is derived, so not searched.
+    # refit_interval is critical (controls batch size).
+    _SEARCH_SPACE_REG = {
+        "n_rounds":       [300, 500, 1000, 1500, 2000],
+        "learning_rate":  [0.01, 0.02, 0.05, 0.08, 0.1, 0.15, 0.2],
+        "max_depth":      [2, 3, 4, 5, 6],
+        "refit_interval": [5, 10, 20, 50, 100],
+        "expand_ratio":   [0.0, 0.05, 0.1, 0.2, 0.3],
+        "y_weight":       [0.5, 0.7, 0.8, 0.9, 1.0],
+        "colsample_bytree": [0.7, 0.8, 0.9, 1.0],
+        "hvrt_min_samples_leaf": [None, 5, 10, 20],
+        "boost_optimizer": ["standard", "momentum", "adam", "partition_adaptive"],
+    }
+
+    _SEARCH_SPACE_CLF = {
+        **_SEARCH_SPACE_REG,
+        "boost_optimizer": ["standard", "momentum", "adam", "newton", "partition_adaptive"],
+    }
+
+    _DEFAULTS_REG = {
+        "n_rounds": 500, "learning_rate": 0.05, "max_depth": 3,
+        "refit_interval": 10, "expand_ratio": 0.1,
+        "y_weight": 0.9, "colsample_bytree": 1.0, "hvrt_min_samples_leaf": None,
+        "boost_optimizer": "partition_adaptive",
+    }
+
+    _DEFAULTS_CLF = {
+        "n_rounds": 1000, "learning_rate": 0.2, "max_depth": 5,
+        "refit_interval": 10, "expand_ratio": 0.1,
+        "y_weight": 0.7, "colsample_bytree": 0.8, "hvrt_min_samples_leaf": None,
+        "boost_optimizer": "partition_adaptive",
+    }
+
+    def __init__(self, task: str, n_trials: int = 50, random_state: int = 42):
+        self.task = task
+        self.n_trials = n_trials
+        self.random_state = random_state
+        self.model_ = None
+        self.best_params_ = None
+        self.best_score_ = None
+        self.fit_time_ = 0.0
+
+    def fit(self, X, y):
+        from geoxgb import GeoXGBRegressor, GeoXGBClassifier
+
+        is_clf = self.task != "regression"
+        model_cls = GeoXGBClassifier if is_clf else GeoXGBRegressor
+        scorer = _auc_scorer if is_clf else _r2_scorer
+        space = self._SEARCH_SPACE_CLF if is_clf else self._SEARCH_SPACE_REG
+        defaults = self._DEFAULTS_CLF if is_clf else self._DEFAULTS_REG
+
+        # single_pass is always on; reduce_ratio derived automatically
+        fixed = {"single_pass": True}
+
+        t0 = time.perf_counter()
+        self.best_params_, self.best_score_ = _grid_search_cv(
+            model_cls, space, defaults, X, y, self.n_trials,
+            self.random_state, scorer, is_clf, fixed_params=fixed,
+        )
+
+        # Refit best on full data
+        best_run = {**self.best_params_, "random_state": self.random_state, **fixed}
+        self.model_ = model_cls(**best_run)
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            self.model_.fit(X, y)
+        self.fit_time_ = time.perf_counter() - t0
+        return self
+
+    def predict(self, X):
+        return self.model_.predict(X)
+
+    def predict_proba(self, X):
+        return self.model_.predict_proba(X)
+
+    def save(self, path: Path):
+        path.parent.mkdir(parents=True, exist_ok=True)
+        self.model_.save(str(path))
+        import json
+        meta_path = path.with_suffix(".meta.json")
+        with open(meta_path, "w") as f:
+            json.dump({"best_params": self.best_params_,
+                        "best_score": self.best_score_}, f, indent=2,
                        default=str)
 
 
@@ -280,7 +489,6 @@ class XGBoostHPOModel:
     def save(self, path: Path):
         path.parent.mkdir(parents=True, exist_ok=True)
         self.model_.save_model(str(path.with_suffix(".json")))
-        # Also save best params alongside
         import json
         meta_path = path.with_suffix(".meta.json")
         with open(meta_path, "w") as f:
@@ -300,11 +508,13 @@ def get_models(mode: str, task: str, n_trials: int = 50,
                 XGBoostDefaultModel(task, random_state)]
     elif mode == "hpo":
         return [GeoXGBHPOModel(task, n_trials, random_state),
+                GeoXGBSinglePassHPOModel(task, n_trials, random_state),
                 XGBoostHPOModel(task, n_trials, random_state)]
     else:
         return [
             GeoXGBDefaultModel(task, random_state),
             XGBoostDefaultModel(task, random_state),
             GeoXGBHPOModel(task, n_trials, random_state),
+            GeoXGBSinglePassHPOModel(task, n_trials, random_state),
             XGBoostHPOModel(task, n_trials, random_state),
         ]

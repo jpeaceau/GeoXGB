@@ -8,18 +8,17 @@ SEEDS = [42]
 N_FOLDS = 3
 
 # HPO settings
-HPO_TRIALS_GEOXGB = 30
-HPO_TRIALS_XGBOOST = 30
+HPO_TRIALS = 50
 HPO_CV = 3
 
 # Tiered HPO budget by dataset size
-def hpo_trials_for_n(n: int, base: int = 30) -> int:
+def hpo_trials_for_n(n: int, base: int = HPO_TRIALS) -> int:
     if n >= 50_000:
-        return 8
+        return max(base // 5, 10)
     if n >= 10_000:
-        return max(base // 3, 10)
+        return max(base // 3, 15)
     if n >= 2_000:
-        return max(base * 2 // 3, 20)
+        return max(base * 2 // 3, 30)
     return base
 
 # Output directory — top-level project results folder

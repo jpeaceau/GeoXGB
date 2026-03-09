@@ -94,7 +94,7 @@ class _GeoXGBBase:
         colsample_bytree=1.0,
         predict_stride=1,
         track_partition_trajectory=True,
-        boost_optimizer='standard',
+        boost_optimizer='partition_adaptive',
         momentum_beta=0.9,
         adam_beta2=0.999,
         adam_epsilon=1e-8,

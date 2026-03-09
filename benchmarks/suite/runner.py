@@ -334,12 +334,18 @@ def run(mode: str = "default",
     all_rows = []
     modes = ["default", "hpo"] if mode == "all" else [mode]
 
-    # Determine output path once (used for incremental writes)
+    # Single output CSV for all results (mode is stored per-row)
     if output:
         out_path = Path(output)
     else:
-        out_path = RESULTS_DIR / f"{mode}_results.csv"
+        out_path = RESULTS_DIR / "results.csv"
     out_path.parent.mkdir(parents=True, exist_ok=True)
+
+    # Resume from existing CSV if present (append new rows)
+    if out_path.exists():
+        existing = pd.read_csv(out_path)
+        all_rows = existing.to_dict("records")
+        log.info("Resuming from %s (%d existing rows)", out_path.name, len(all_rows))
 
     # Compute threads per worker to avoid oversubscription.
     # Each worker gets total_cores / workers threads for OpenMP + XGBoost.
