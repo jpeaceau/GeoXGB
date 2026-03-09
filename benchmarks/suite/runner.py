@@ -199,6 +199,54 @@ def run_hpo_single(ds: dict, save_models: bool = False) -> list[dict]:
                     row["hpo_cv_score"] = getattr(model, "best_score_",
                                                    getattr(model, "optimizer_", None)
                                                    and model.optimizer_.best_score_)
+                elif hasattr(model, "optimizer_") and model.optimizer_ is not None:
+                    row["hpo_best_params"] = str(model.optimizer_.best_params_)
+                    row["hpo_cv_score"] = model.optimizer_.best_score_
+
+                # Extended HPO evaluation: same best params but
+                # n_rounds=5000, convergence_tol=None (no early stopping)
+                if (hasattr(model, "extended_model_")
+                        and model.extended_model_ is not None):
+                    try:
+                        ext_model = model.extended_model_
+                        t0 = time.perf_counter()
+                        ext_pred = ext_model.predict(X_te)
+                        ext_predict_time = time.perf_counter() - t0
+
+                        ext_proba = None
+                        if task != "regression":
+                            try:
+                                p = ext_model.predict_proba(X_te)
+                                ext_proba = p[:, 1] if task == "binary" else p
+                            except Exception:
+                                ext_proba = None
+
+                        ext_metrics = compute_metrics(task, y_te, ext_pred, ext_proba)
+                        ext_metrics["fit_time_s"] = model.extended_fit_time_
+                        ext_metrics["predict_time_s"] = ext_predict_time
+
+                        ext_row = {
+                            "category": ds["category"],
+                            "dataset": ds["name"],
+                            "task": task,
+                            "model": "geoxgb_hpo_extended",
+                            "fold": -1,
+                            "seed": seed,
+                            "n_samples": n,
+                            "n_features": d,
+                            **ext_metrics,
+                            "error": "",
+                            "hpo_best_params": row.get("hpo_best_params", ""),
+                            "hpo_cv_score": row.get("hpo_cv_score", ""),
+                        }
+                        log.info("  geoxgb_hpo_extended seed=%d  %s",
+                                 seed,
+                                 "  ".join(f"{k}={v:.4f}"
+                                           for k, v in ext_metrics.items()
+                                           if isinstance(v, float)))
+                        rows.append(ext_row)
+                    except Exception as ext_e:
+                        log.warning("  Extended HPO eval failed: %s", ext_e)
 
             except Exception as e:
                 tb = traceback.format_exc()

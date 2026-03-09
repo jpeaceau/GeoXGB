@@ -85,6 +85,10 @@ _PYTHON_TO_CPP = {
     "predict_stride":        "predict_stride",
     "grad_budget_weight":    "grad_budget_weight",
     "track_partition_trajectory": "track_partition_trajectory",
+    "boost_optimizer":           "boost_optimizer",
+    "momentum_beta":             "momentum_beta",
+    "adam_beta2":                 "adam_beta2",
+    "adam_epsilon":               "adam_epsilon",
 }
 
 

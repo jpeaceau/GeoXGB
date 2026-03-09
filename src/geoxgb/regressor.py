@@ -13,7 +13,7 @@ class GeoXGBRegressor(_GeoXGBBase):
 
     * ``'squared_error'`` (default) — standard L2 gradient boosting.
       Gradients are residuals ``y − ŷ``; leaf values are means.
-      Optimal defaults: ``max_depth=3``, ``y_weight=0.25``,
+      Optimal defaults: ``max_depth=3``, ``y_weight=0.9``,
       ``method='variance_ordered'``.
 
     * ``'absolute_error'`` — L1 gradient boosting.
@@ -25,11 +25,8 @@ class GeoXGBRegressor(_GeoXGBBase):
 
     .. note:: **HPO is strongly recommended.**
         ``learning_rate`` and ``max_depth`` are the two most sensitive
-        parameters and interact strongly.  The optimal regime is low
-        learning_rate (0.010–0.020) paired with high ``n_rounds``
-        (1 000–5 000) and shallow ``max_depth`` (2–3 for L2; 3–4 for L1).
-        Use ``GeoXGBOptimizer`` or any Optuna/sklearn HPO tool for
-        production models.
+        parameters and interact strongly.  Use ``GeoXGBOptimizer`` or any
+        Optuna/sklearn HPO tool for production models.
 
     Parameters
     ----------
@@ -40,31 +37,32 @@ class GeoXGBRegressor(_GeoXGBBase):
         ``method='orthant_stratified'``, ``max_depth=4``,
         ``y_weight=0.5``, and ``adaptive_reduce_ratio=True`` for best
         results.
-    n_rounds : int, default=1000
+    n_rounds : int, default=500
         Number of boosting rounds.
-    learning_rate : float, default=0.02
-        Shrinkage per tree.  Optimal range 0.010–0.020.
+    learning_rate : float, default=0.05
+        Shrinkage per tree.
     max_depth : int, default=3
         Maximum depth of each weak learner.
-    min_samples_leaf : int, default=5
+    min_samples_leaf : int, default=3
         Minimum samples per leaf in each weak learner.
     n_partitions : int or None, default=None
         Target number of partitions (None = auto).
-    reduce_ratio : float, default=0.8
+    reduce_ratio : float, default=0.9
         Fraction of samples retained per resampling round.
     expand_ratio : float, default=0.1
         Fraction of n to generate as synthetic samples.
-    y_weight : float, default=0.25
+    y_weight : float, default=0.9
         Partition blend: 0 = geometry-only, 1 = fully gradient-driven.
     method : str, default='variance_ordered'
         Reduction strategy.  Use ``'orthant_stratified'`` with
         ``loss='absolute_error'``.
-    refit_interval : int or None, default=50
+    refit_interval : int or None, default=10
         Re-fit partition tree every N rounds.
-    auto_noise : bool, default=True
-        Enable noise-modulation gating.
-    noise_guard : bool, default=True
-        Enable noise-guard veto on resampling.
+    auto_noise : bool, default=False
+        Enable noise-modulation gating.  Disabled for regression
+        (noise injection hurts regression accuracy).  When enabled,
+        ``noise_guard`` and ``refit_noise_floor`` are automatically
+        activated.
     partitioner : str, default='hvrt'
         Partition geometry.  See parameters reference for options.
     adaptive_reduce_ratio : bool, default=False
@@ -82,59 +80,46 @@ class GeoXGBRegressor(_GeoXGBBase):
         data coverage; more refits → smaller blocks for speed.
         ``None``: disabled.  Integer: explicit block size.
         Included in HPO via ``GeoXGBOptimizer`` when n is large enough.
-    leave_last_block_out : bool, default=False
-        When True, the last block of each epoch is never trained on and is
-        stored as ``model.held_out_X_`` / ``model.held_out_y_`` for external
-        validation or convergence monitoring.
     random_state : int, default=42
     """
 
     def __init__(
         self,
         loss='squared_error',
-        n_rounds=1000,
-        learning_rate=0.02,
+        n_rounds=500,
+        learning_rate=0.05,
         max_depth=3,
-        min_samples_leaf=5,
+        min_samples_leaf=3,
         n_partitions=None,
         hvrt_min_samples_leaf=None,
-        hvrt_max_samples_leaf=None,
-        reduce_ratio=0.8,
+        reduce_ratio=0.9,
         expand_ratio=0.1,
-        y_weight=0.25,
+        y_weight=0.9,
         method="variance_ordered",
-        variance_weighted=False,
-        bandwidth="auto",
-        refit_interval=50,
-        auto_noise=True,
+        refit_interval=10,
+        auto_noise=False,
         auto_expand=True,
         min_train_samples=5000,
         random_state=42,
-        lr_schedule=None,
-        tree_criterion="squared_error",
         n_jobs=1,
         generation_strategy="simplex_mixup",
-        adaptive_bandwidth=False,
         convergence_tol=None,
         feature_weights=None,
-        assignment_strategy="auto",
         tree_splitter="random",
-        refit_noise_floor=_REFIT_NOISE_FLOOR,
-        noise_guard=True,
         hvrt_params=None,
-        hvrt_tree_splitter=None,
-        hvrt_auto_reduce_threshold=None,
         partitioner='hvrt',
         adaptive_reduce_ratio=False,
         sample_block_n='auto',
-        leave_last_block_out=False,
         n_bins=64,
         max_resample_n=None,
         sample_without_replacement=True,
         colsample_bytree=1.0,
         predict_stride=1,
-        grad_budget_weight=0.0,
         track_partition_trajectory=True,
+        boost_optimizer='standard',
+        momentum_beta=0.9,
+        adam_beta2=0.999,
+        adam_epsilon=1e-8,
     ):
         if loss not in ('squared_error', 'absolute_error'):
             raise ValueError(
@@ -148,43 +133,34 @@ class GeoXGBRegressor(_GeoXGBBase):
             min_samples_leaf=min_samples_leaf,
             n_partitions=n_partitions,
             hvrt_min_samples_leaf=hvrt_min_samples_leaf,
-            hvrt_max_samples_leaf=hvrt_max_samples_leaf,
             reduce_ratio=reduce_ratio,
             expand_ratio=expand_ratio,
             y_weight=y_weight,
             method=method,
-            variance_weighted=variance_weighted,
-            bandwidth=bandwidth,
             refit_interval=refit_interval,
             auto_noise=auto_noise,
             auto_expand=auto_expand,
             min_train_samples=min_train_samples,
             random_state=random_state,
-            lr_schedule=lr_schedule,
-            tree_criterion=tree_criterion,
             n_jobs=n_jobs,
             generation_strategy=generation_strategy,
-            adaptive_bandwidth=adaptive_bandwidth,
             convergence_tol=convergence_tol,
             feature_weights=feature_weights,
-            assignment_strategy=assignment_strategy,
             tree_splitter=tree_splitter,
-            refit_noise_floor=refit_noise_floor,
-            noise_guard=noise_guard,
             hvrt_params=hvrt_params,
-            hvrt_tree_splitter=hvrt_tree_splitter,
-            hvrt_auto_reduce_threshold=hvrt_auto_reduce_threshold,
             partitioner=partitioner,
             adaptive_reduce_ratio=adaptive_reduce_ratio,
             sample_block_n=sample_block_n,
-            leave_last_block_out=leave_last_block_out,
             n_bins=n_bins,
             max_resample_n=max_resample_n,
             sample_without_replacement=sample_without_replacement,
             colsample_bytree=colsample_bytree,
             predict_stride=predict_stride,
-            grad_budget_weight=grad_budget_weight,
             track_partition_trajectory=track_partition_trajectory,
+            boost_optimizer=boost_optimizer,
+            momentum_beta=momentum_beta,
+            adam_beta2=adam_beta2,
+            adam_epsilon=adam_epsilon,
         )
 
     def fit(self, X, y, feature_types=None):

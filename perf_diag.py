@@ -104,46 +104,46 @@ refit_interval = 5
 BASE_SHARED = dict(
     max_depth=2, min_samples_leaf=5,
     refit_interval=refit_interval,
-    auto_noise=False, noise_guard=False, refit_noise_floor=0.0,
+    auto_noise=False,
     auto_expand=False, min_train_samples=5000,
-    bandwidth="auto", n_bins=64, random_state=42,
+    n_bins=64, random_state=42,
     hvrt_min_samples_leaf=-1,  # auto
 )
 
 CONFIGS = {
     "A_baseline      (reduce=1.0, vw=False, expand=0.0)": dict(
         **BASE_SHARED,
-        reduce_ratio=1.0, variance_weighted=False, expand_ratio=0.0,
+        reduce_ratio=1.0, expand_ratio=0.0,
         n_partitions=-1,
     ),
     "B_var_ordered   (reduce=0.7, vw=True,  expand=0.0)": dict(
         **BASE_SHARED,
-        reduce_ratio=0.7, variance_weighted=True, expand_ratio=0.0,
+        reduce_ratio=0.7, expand_ratio=0.0,
         n_partitions=-1,
     ),
     "C_expand_only   (reduce=1.0, vw=False, expand=0.1)": dict(
         **BASE_SHARED,
-        reduce_ratio=1.0, variance_weighted=False, expand_ratio=0.1,
+        reduce_ratio=1.0, expand_ratio=0.1,
         n_partitions=-1,
     ),
     "D_full          (reduce=0.7, vw=True,  expand=0.1)": dict(
         **BASE_SHARED,
-        reduce_ratio=0.7, variance_weighted=True, expand_ratio=0.1,
+        reduce_ratio=0.7, expand_ratio=0.1,
         n_partitions=-1,
     ),
     "E_many_parts    (reduce=0.7, vw=True,  np=50)": dict(
         **BASE_SHARED,
-        reduce_ratio=0.7, variance_weighted=True, expand_ratio=0.0,
+        reduce_ratio=0.7, expand_ratio=0.0,
         n_partitions=50,  # forces small partitions ~100 samples each
     ),
     "F_few_parts     (reduce=0.7, vw=True,  np=4)": dict(
         **BASE_SHARED,
-        reduce_ratio=0.7, variance_weighted=True, expand_ratio=0.0,
+        reduce_ratio=0.7, expand_ratio=0.0,
         n_partitions=4,  # forces large partitions ~1250 samples each
     ),
     "G_serial_like   (reduce=0.7, vw=False, expand=0.0)": dict(
         **BASE_SHARED,
-        reduce_ratio=0.7, variance_weighted=False, expand_ratio=0.0,
+        reduce_ratio=0.7, expand_ratio=0.0,
         n_partitions=-1,
     ),
 }

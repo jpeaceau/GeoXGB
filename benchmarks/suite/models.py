@@ -69,9 +69,12 @@ class GeoXGBHPOModel:
         self.model_ = None
         self.optimizer_ = None
         self.fit_time_ = 0.0
+        # Extended refit: best params + n_rounds=5000, no early stopping
+        self.extended_model_ = None
+        self.extended_fit_time_ = 0.0
 
     def fit(self, X, y):
-        from geoxgb import GeoXGBOptimizer
+        from geoxgb import GeoXGBOptimizer, GeoXGBRegressor, GeoXGBClassifier
         opt_task = "regression" if self.task == "regression" else "classification"
         self.optimizer_ = GeoXGBOptimizer(
             task=opt_task, n_trials=self.n_trials, cv=3,
@@ -82,7 +85,26 @@ class GeoXGBHPOModel:
             t0 = time.perf_counter()
             self.optimizer_.fit(X, y)
             self.fit_time_ = time.perf_counter() - t0
+
         self.model_ = self.optimizer_.best_model_
+
+        # Extended refit: same best params but with n_rounds=5000 and
+        # convergence_tol disabled, so the model trains to completion.
+        model_cls = (GeoXGBClassifier if opt_task == "classification"
+                     else GeoXGBRegressor)
+        ext_params = {
+            **self.optimizer_.best_params_,
+            "n_rounds": 5000,
+            "convergence_tol": None,
+            "random_state": self.random_state,
+        }
+        self.extended_model_ = model_cls(**ext_params)
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            t0 = time.perf_counter()
+            self.extended_model_.fit(X, y)
+            self.extended_fit_time_ = time.perf_counter() - t0
+
         return self
 
     def predict(self, X):

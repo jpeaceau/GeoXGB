@@ -112,37 +112,39 @@ class GeoXGBOptimizer:
     # Search space covers the empirically-validated ranges from 2 000+
     # Optuna TPE trials across diabetes, Friedman-1, California Housing,
     # and Kaggle churn benchmarks:
-    #   - learning_rate: log-spaced 0.003–0.1 (wide range for diverse datasets)
+    #   - learning_rate: 0.01–0.2 (capped at 0.2 to prevent divergence)
     #   - max_depth: 2–7 (deeper trees help high-d and large-n)
-    #   - reduce_ratio: 0.3–0.95 (large dataset-dependent variation)
-    #   - refit_interval: 10–500 (diabetes optimal=200, Friedman-1=10)
+    #   - reduce_ratio: 0.1–0.95 (large dataset-dependent variation)
+    #   - refit_interval: 5–200 (frequent refits generally better)
     #   - expand_ratio: 0.0–0.5 (secondary; most impactful on small n)
-    #   - y_weight: 0.1–0.8 (classifier benefits from higher values)
+    #   - y_weight: 0.3–1.0 (higher values generally better)
     #   - hvrt_min_samples_leaf: controls partition granularity
     # ------------------------------------------------------------------
 
     _DEFAULTS_REGRESSION = {
-        "n_rounds":       1000,
-        "learning_rate":  0.02,
+        "n_rounds":       500,
+        "learning_rate":  0.05,
         "max_depth":      3,
-        "reduce_ratio":   0.8,
-        "refit_interval": 50,
+        "reduce_ratio":   0.9,
+        "refit_interval": 10,
         "expand_ratio":   0.1,
-        "y_weight":       0.25,
+        "y_weight":       0.9,
         "colsample_bytree": 1.0,
         "hvrt_min_samples_leaf": None,
+        "boost_optimizer": "standard",
     }
 
     _SEARCH_SPACE_REGRESSION = {
-        "n_rounds":       [500, 1000, 1500, 2000, 3000, 4000],
-        "learning_rate":  [0.003, 0.005, 0.008, 0.01, 0.015, 0.02, 0.03, 0.05, 0.08, 0.1],
+        "n_rounds":       [300, 500, 1000, 1500, 2000, 3000],
+        "learning_rate":  [0.01, 0.02, 0.03, 0.05, 0.08, 0.1, 0.15, 0.2],
         "max_depth":      [2, 3, 4, 5, 6, 7],
         "reduce_ratio":   [0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 0.95],
-        "refit_interval": [10, 20, 50, 100, 200, 300, 500],
+        "refit_interval": [5, 10, 20, 50, 100, 200],
         "expand_ratio":   [0.0, 0.05, 0.1, 0.2, 0.3, 0.4, 0.5],
-        "y_weight":       [0.1, 0.15, 0.2, 0.25, 0.3, 0.4, 0.5],
+        "y_weight":       [0.3, 0.5, 0.7, 0.8, 0.9, 1.0],
         "colsample_bytree": [0.6, 0.7, 0.8, 0.9, 1.0],
         "hvrt_min_samples_leaf": [None, 5, 10, 20, 30],
+        "boost_optimizer": ["standard", "momentum", "adam", "partition_adaptive"],
     }
 
     # ------------------------------------------------------------------
@@ -152,28 +154,30 @@ class GeoXGBOptimizer:
 
     _DEFAULTS_CLASSIFICATION = {
         "n_rounds":       1000,
-        "learning_rate":  0.02,
-        "max_depth":      3,
-        "reduce_ratio":   0.8,
-        "refit_interval": 50,
+        "learning_rate":  0.2,
+        "max_depth":      5,
+        "reduce_ratio":   0.9,
+        "refit_interval": 10,
         "expand_ratio":   0.1,
-        "y_weight":       0.25,
+        "y_weight":       0.7,
         "colsample_bytree": 0.8,
         "class_weight":   None,
         "hvrt_min_samples_leaf": None,
+        "boost_optimizer": "standard",
     }
 
     _SEARCH_SPACE_CLASSIFICATION = {
         "n_rounds":       [500, 1000, 1500, 2000, 3000, 4000],
-        "learning_rate":  [0.003, 0.005, 0.008, 0.01, 0.015, 0.02, 0.03, 0.05, 0.08, 0.1],
+        "learning_rate":  [0.01, 0.02, 0.03, 0.05, 0.08, 0.1, 0.15, 0.2],
         "max_depth":      [2, 3, 4, 5, 6, 7],
         "reduce_ratio":   [0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 0.95],
-        "refit_interval": [10, 20, 50, 100, 200, 300, 500],
+        "refit_interval": [5, 10, 20, 50, 100, 200],
         "expand_ratio":   [0.0, 0.05, 0.1, 0.2, 0.3, 0.4, 0.5],
-        "y_weight":       [0.1, 0.15, 0.2, 0.25, 0.3, 0.4, 0.5, 0.6, 0.8],
+        "y_weight":       [0.3, 0.5, 0.7, 0.8, 0.9, 1.0],
         "colsample_bytree": [0.6, 0.7, 0.8, 0.9, 1.0],
         "class_weight":   [None, "balanced"],
         "hvrt_min_samples_leaf": [None, 5, 10, 20, 30],
+        "boost_optimizer": ["standard", "momentum", "adam", "newton", "partition_adaptive"],
     }
 
     # Applied to every trial: convergence_tol enables early stopping.

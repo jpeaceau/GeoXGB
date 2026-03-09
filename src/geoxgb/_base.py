@@ -41,21 +41,22 @@ class _GeoXGBBase:
 
     _PARAM_NAMES = (
         "n_rounds", "learning_rate", "max_depth", "min_samples_leaf",
-        "n_partitions", "hvrt_min_samples_leaf", "hvrt_max_samples_leaf",
+        "n_partitions", "hvrt_min_samples_leaf",
         "reduce_ratio", "expand_ratio",
-        "y_weight", "method", "variance_weighted", "bandwidth", "refit_interval",
+        "y_weight", "method", "variance_weighted", "refit_interval",
         "auto_noise", "auto_expand", "min_train_samples", "random_state",
-        "lr_schedule", "tree_criterion", "n_jobs",
-        "generation_strategy", "adaptive_bandwidth", "convergence_tol",
-        "feature_weights", "assignment_strategy", "tree_splitter",
-        "refit_noise_floor", "noise_guard", "hvrt_params", "hvrt_tree_splitter",
-        "hvrt_auto_reduce_threshold", "partitioner", "adaptive_reduce_ratio",
+        "n_jobs",
+        "generation_strategy", "convergence_tol",
+        "feature_weights", "tree_splitter",
+        "refit_noise_floor", "noise_guard", "hvrt_params",
+        "partitioner", "adaptive_reduce_ratio",
         "loss", "sample_block_n", "leave_last_block_out",
         "n_bins", "max_resample_n",
         "sample_without_replacement",
         "colsample_bytree", "predict_stride",
         "grad_budget_weight",
         "track_partition_trajectory",
+        "boost_optimizer", "momentum_beta", "adam_beta2", "adam_epsilon",
     )
 
     _is_classifier = False
@@ -64,47 +65,38 @@ class _GeoXGBBase:
         self,
         n_rounds=1000,
         learning_rate=0.2,
-        max_depth=4,
-        min_samples_leaf=5,
+        max_depth=5,
+        min_samples_leaf=10,
         n_partitions=None,
         hvrt_min_samples_leaf=None,
-        hvrt_max_samples_leaf=None,
-        reduce_ratio=0.7,
+        reduce_ratio=0.9,
         expand_ratio=0.0,
-        y_weight=0.5,
+        y_weight=0.7,
         method="variance_ordered",
-        variance_weighted=True,
-        bandwidth="auto",
-        refit_interval=20,
+        refit_interval=10,
         auto_noise=True,
         auto_expand=True,
         min_train_samples=5000,
         random_state=42,
-        lr_schedule=None,
-        tree_criterion="squared_error",
         n_jobs=1,
         generation_strategy="epanechnikov",
-        adaptive_bandwidth=False,
         convergence_tol=None,
         feature_weights=None,
-        assignment_strategy="auto",
         tree_splitter="random",
-        refit_noise_floor=0.05,
-        noise_guard=True,
         hvrt_params=None,
-        hvrt_tree_splitter=None,
-        hvrt_auto_reduce_threshold=None,
         partitioner='hvrt',
         adaptive_reduce_ratio=False,
         sample_block_n='auto',
-        leave_last_block_out=False,
         n_bins=64,
         max_resample_n=None,
         sample_without_replacement=True,
         colsample_bytree=1.0,
         predict_stride=1,
-        grad_budget_weight=0.0,
         track_partition_trajectory=True,
+        boost_optimizer='standard',
+        momentum_beta=0.9,
+        adam_beta2=0.999,
+        adam_epsilon=1e-8,
     ):
         self.n_rounds = n_rounds
         self.learning_rate = learning_rate
@@ -112,43 +104,41 @@ class _GeoXGBBase:
         self.min_samples_leaf = min_samples_leaf
         self.n_partitions = n_partitions
         self.hvrt_min_samples_leaf = hvrt_min_samples_leaf
-        self.hvrt_max_samples_leaf = hvrt_max_samples_leaf
         self.reduce_ratio = reduce_ratio
         self.expand_ratio = expand_ratio
         self.y_weight = y_weight
         self.method = method
-        self.variance_weighted = variance_weighted
-        self.bandwidth = bandwidth
         self.refit_interval = refit_interval
         self.auto_noise = auto_noise
         self.auto_expand = auto_expand
         self.min_train_samples = min_train_samples
         self.random_state = random_state
-        self.lr_schedule = lr_schedule
-        self.tree_criterion = tree_criterion
         self.n_jobs = n_jobs
         self.generation_strategy = generation_strategy
-        self.adaptive_bandwidth = adaptive_bandwidth
         self.convergence_tol = convergence_tol
         self.feature_weights = feature_weights
-        self.assignment_strategy = assignment_strategy
         self.tree_splitter = tree_splitter
-        self.refit_noise_floor = refit_noise_floor
-        self.noise_guard = noise_guard
         self.hvrt_params = hvrt_params
-        self.hvrt_tree_splitter = hvrt_tree_splitter
-        self.hvrt_auto_reduce_threshold = hvrt_auto_reduce_threshold
         self.partitioner = partitioner
         self.adaptive_reduce_ratio = adaptive_reduce_ratio
         self.sample_block_n = sample_block_n
-        self.leave_last_block_out = leave_last_block_out
         self.n_bins = n_bins
         self.max_resample_n = max_resample_n
         self.sample_without_replacement = sample_without_replacement
         self.colsample_bytree = colsample_bytree
         self.predict_stride = predict_stride
-        self.grad_budget_weight = grad_budget_weight
         self.track_partition_trajectory = track_partition_trajectory
+        self.boost_optimizer = boost_optimizer
+        self.momentum_beta = momentum_beta
+        self.adam_beta2 = adam_beta2
+        self.adam_epsilon = adam_epsilon
+
+        # Derived internals (removed from public API)
+        self.variance_weighted = False
+        self.noise_guard = auto_noise
+        self.refit_noise_floor = 0.05 if auto_noise else 0.0
+        self.leave_last_block_out = False
+        self.grad_budget_weight = 0.0
 
         # Fitted state
         self._is_fitted = False

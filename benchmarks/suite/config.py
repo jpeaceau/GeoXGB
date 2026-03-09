@@ -22,8 +22,8 @@ def hpo_trials_for_n(n: int, base: int = 30) -> int:
         return max(base * 2 // 3, 20)
     return base
 
-# Output directory
-RESULTS_DIR = Path(__file__).parent / "results"
+# Output directory — top-level project results folder
+RESULTS_DIR = Path(__file__).resolve().parent.parent.parent / "results"
 RESULTS_DIR.mkdir(parents=True, exist_ok=True)
 
 # Model save directory (serialized models for inspection)
