@@ -211,22 +211,27 @@ class GeoXGBClassifier(_GeoXGBBase):
         -------
         self
         """
-        X = np.asarray(X, dtype=np.float64)
+        if feature_types is None:
+            feature_types = self._infer_feature_types(X)
+        X = np.asarray(X)
         y_raw = np.asarray(y).ravel()
         self._feature_types = feature_types
         self._n_features = X.shape[1]
+        X = self._encode_features(X, feature_types, fitting=True)
+        X = np.asarray(X, dtype=np.float64)
         self._train_n_original = len(X)
         self._resample_history = []
 
         self._label_encoder = LabelEncoder()
         y_enc = self._label_encoder.fit_transform(y_raw)
+        X = self._fit_cat_tree(X, y_enc.astype(float), feature_types)
         self._classes = self._label_encoder.classes_
         self._n_classes = len(self._classes)
 
         if self._n_classes < 2:
             raise ValueError("Need at least 2 classes.")
 
-        # Compute class weights (UPDATE-002)
+        # Compute class weights
         n_s, n_c = len(y_enc), self._n_classes
         if self.class_weight == "balanced":
             counts = np.bincount(y_enc, minlength=n_c).astype(float)
@@ -377,11 +382,13 @@ class GeoXGBClassifier(_GeoXGBBase):
             Rows sum to 1.0. Column order follows ``self._classes``.
         """
         self._check_fitted()
+        X = self._encode_features(np.asarray(X), self._feature_types)
         X = np.asarray(X, dtype=np.float64)
+        X = self._apply_cat_tree(X)
 
         if self._n_classes == 2:
             if getattr(self, '_cpp_model', None) is not None:
-                return self._cpp_model.predict_proba(np.asarray(X, dtype=np.float64))
+                return self._cpp_model.predict_proba(X)
             raw = self._raw_predict(X)
             p1 = _sigmoid(raw)
             return np.column_stack([1 - p1, p1])

@@ -1,8 +1,54 @@
+import math
+
 import numpy as np
 from hvrt import HVRT
 from sklearn.tree import DecisionTreeRegressor, export_text
 
 from geoxgb._resampling import hvrt_resample
+
+
+def _infer_feature_types(X):
+    """Auto-detect feature types from input data, mirroring Pandas' dtype rules.
+
+    Returns
+    -------
+    list[str] | None
+        Per-column ``'continuous'`` / ``'categorical'``, or ``None``
+        when all columns are numeric.
+    """
+    try:
+        import pandas as pd
+        if isinstance(X, pd.DataFrame):
+            types = []
+            for col in X.columns:
+                if pd.api.types.is_numeric_dtype(X[col]):
+                    types.append('continuous')
+                else:
+                    types.append('categorical')
+            if all(t == 'continuous' for t in types):
+                return None
+            return types
+    except ImportError:
+        pass
+
+    arr = np.asarray(X)
+    if arr.dtype.kind in ('i', 'u', 'f', 'b', 'c'):
+        return None
+
+    if arr.ndim == 2:
+        types = []
+        for j in range(arr.shape[1]):
+            col = arr[:, j]
+            try:
+                col.astype(np.float64)
+                types.append('continuous')
+            except (ValueError, TypeError):
+                types.append('categorical')
+        if all(t == 'continuous' for t in types):
+            return None
+        return types
+
+    return None
 
 # When auto_noise=True, skip a scheduled refit if the previous resample's
 # noise_modulation fell below this threshold.  Near-zero noise_mod means
@@ -123,6 +169,9 @@ class _GeoXGBBase:
         self._is_fitted = False
         self._n_features = None
         self._feature_types = None
+        self._cat_encoders = {}       # column index → LabelEncoder for categorical cols
+        self._cat_tree = None         # shallow tree for categorical → geometry signal
+        self._cat_col_indices = None  # indices of categorical columns
         self._resample_history = []
         self._train_n_original = None
         self._train_n_resampled = None
@@ -130,6 +179,70 @@ class _GeoXGBBase:
         self._hvrt_cache = None   # cached HVRT geometry (reused across refits)
         self._convergence_losses = []   # mean-abs-gradient at each refit (convergence tracking)
         self.convergence_round_ = None  # round at which convergence_tol fired (None = ran to completion)
+
+    # ------------------------------------------------------------------
+    # Categorical encoding
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _infer_feature_types(X):
+        return _infer_feature_types(X)
+
+    def _encode_features(self, X, feature_types=None, fitting=False):
+        """Label-encode categorical columns; treat integers as continuous."""
+        if feature_types is None:
+            return X
+        X = X.copy()
+        if fitting:
+            self._cat_encoders = {}
+        for i, ft in enumerate(feature_types):
+            if ft == 'categorical':
+                if fitting:
+                    from sklearn.preprocessing import LabelEncoder
+                    le = LabelEncoder()
+                    X[:, i] = le.fit_transform(X[:, i].astype(str)).astype(np.float64)
+                    self._cat_encoders[i] = le
+                else:
+                    le = self._cat_encoders.get(i)
+                    if le is not None:
+                        X[:, i] = le.transform(X[:, i].astype(str)).astype(np.float64)
+        return X
+
+    def _fit_cat_tree(self, X, y, feature_types):
+        """Fit a shallow tree on categorical features and append its prediction
+        as a continuous geometry signal."""
+        if feature_types is None:
+            return X
+
+        cat_idx = [i for i, ft in enumerate(feature_types) if ft == 'categorical']
+        if not cat_idx:
+            return X
+
+        self._cat_col_indices = cat_idx
+        X_cat = X[:, cat_idx]
+
+        n_unique = len(np.unique(X_cat, axis=0))
+        depth = min(4, max(2, int(math.log2(max(n_unique, 4)))))
+
+        tree = DecisionTreeRegressor(
+            max_depth=depth,
+            min_samples_leaf=max(10, len(X) // 100),
+            random_state=self.random_state,
+        )
+        tree.fit(X_cat, y)
+        self._cat_tree = tree
+
+        cat_signal = tree.predict(X_cat).reshape(-1, 1)
+        return np.hstack([X, cat_signal])
+
+    def _apply_cat_tree(self, X):
+        """Apply the fitted categorical tree at predict time — append signal."""
+        if self._cat_tree is None:
+            return X
+
+        X_cat = X[:, self._cat_col_indices]
+        cat_signal = self._cat_tree.predict(X_cat).reshape(-1, 1)
+        return np.hstack([X, cat_signal])
 
     # ------------------------------------------------------------------
     # Resample delegate

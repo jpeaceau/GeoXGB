@@ -182,8 +182,15 @@ class GeoXGBRegressor(_GeoXGBBase):
         self
         """
         from geoxgb._cpp_backend import _CPP_AVAILABLE
-        X = np.asarray(X, dtype=np.float64)
+        if feature_types is None:
+            feature_types = self._infer_feature_types(X)
+        X = np.asarray(X)
         y = np.asarray(y, dtype=np.float64)
+        self._n_features = X.shape[1]
+        self._feature_types = feature_types
+        X = self._encode_features(X, feature_types, fitting=True)
+        X = np.asarray(X, dtype=np.float64)
+        X = self._fit_cat_tree(X, y, feature_types)
 
         _use_cpp = (
             _CPP_AVAILABLE
@@ -202,7 +209,6 @@ class GeoXGBRegressor(_GeoXGBBase):
             self.convergence_round_ = None if cr < 0 else cr
         else:
             self._cpp_model = None
-            self._feature_types = feature_types
             self._resample_history = []
             self._fit_boosting(X, y)
         return self
@@ -220,8 +226,14 @@ class GeoXGBRegressor(_GeoXGBBase):
         ndarray of shape (n_samples,)
         """
         if getattr(self, '_cpp_model', None) is not None:
-            return self._cpp_model.predict(np.asarray(X, dtype=np.float64))
+            X = self._encode_features(np.asarray(X), self._feature_types)
+            X = np.asarray(X, dtype=np.float64)
+            X = self._apply_cat_tree(X)
+            return self._cpp_model.predict(X)
         self._check_fitted()
+        X = self._encode_features(np.asarray(X), self._feature_types)
+        X = np.asarray(X, dtype=np.float64)
+        X = self._apply_cat_tree(X)
         return self._raw_predict(X)
 
     @property
